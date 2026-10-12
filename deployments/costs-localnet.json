@@ -1,0 +1,90 @@
+{
+  "measuredAt": "2026-10-12T18:40:31.784Z",
+  "computeUnits": {
+    "register_identity": 6813,
+    "open_chunk + create_record (1 chunk)": 27793,
+    "confirm_replication": 9195,
+    "write_segment (v0, 1010 bytes)": 3712,
+    "write_segment (v1, 3864 bytes)": 3722
+  },
+  "files": [
+    {
+      "size": "1 KiB",
+      "tx": "v1",
+      "chunks": 1,
+      "segmentTxs": 1,
+      "walletTxs": 1,
+      "uploadFee": "44208",
+      "rentDeposit": "5477520",
+      "networkFees": "15000",
+      "quotedTotal": "5339888",
+      "spent": "5536728",
+      "seconds": 1.68
+    },
+    {
+      "size": "1 KiB",
+      "tx": "v0",
+      "chunks": 1,
+      "segmentTxs": 2,
+      "walletTxs": 1,
+      "uploadFee": "44208",
+      "rentDeposit": "5477520",
+      "networkFees": "20000",
+      "quotedTotal": "5344888",
+      "spent": "5541728",
+      "seconds": 1.633
+    },
+    {
+      "size": "100 KiB",
+      "tx": "v1",
+      "chunks": 1,
+      "segmentTxs": 27,
+      "walletTxs": 1,
+      "uploadFee": "449712",
+      "rentDeposit": "5512320",
+      "networkFees": "145000",
+      "quotedTotal": "5896272",
+      "spent": "6107032",
+      "seconds": 3.286
+    },
+    {
+      "size": "100 KiB",
+      "tx": "v0",
+      "chunks": 1,
+      "segmentTxs": 102,
+      "walletTxs": 1,
+      "uploadFee": "449712",
+      "rentDeposit": "5574960",
+      "networkFees": "520000",
+      "quotedTotal": "6333912",
+      "spent": "6544672",
+      "seconds": 8.102
+    },
+    {
+      "size": "1 MiB",
+      "tx": "v1",
+      "chunks": 4,
+      "segmentTxs": 272,
+      "walletTxs": 2,
+      "uploadFee": "4354752",
+      "rentDeposit": "13843440",
+      "networkFees": "1375000",
+      "quotedTotal": "19350472",
+      "spent": "19573192",
+      "seconds": 19.246
+    },
+    {
+      "size": "1 MiB",
+      "tx": "v0",
+      "chunks": 4,
+      "segmentTxs": 1040,
+      "walletTxs": 2,
+      "uploadFee": "4354752",
+      "rentDeposit": "14511600",
+      "networkFees": "5215000",
+      "quotedTotal": "23858632",
+      "spent": "24081352",
+      "seconds": 70.614
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+# Build context = repo root (docker build -f soladb-node/Dockerfile .).
+# BuildKit uses this file instead of a root .dockerignore.  It allowlists what
+# the image needs, so keypairs (.keys, .localnet), ledgers, Rust targets and
+# node_modules never reach the Docker daemon.
+*
+!sdk/package.json
+!sdk/tsconfig.json
+!sdk/src
+!soladb-node/package.json
+!soladb-node/package-lock.json
+!soladb-node/tsconfig.json
+!soladb-node/tsconfig.build.json
+!soladb-node/nest-cli.json
+!soladb-node/src
+**/*.spec.ts

@@ -1,0 +1,35 @@
+[package]
+name = "soladb"
+version = "0.1.0"
+description = "SolaDB: private, replicated file storage on Solana"
+license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "soladb"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+anchor-debug = []
+custom-heap = []
+custom-panic = []
+
+[dependencies]
+anchor-lang = "1.2.1"
+
+[dev-dependencies]
+litesvm = "0.18.0"
+solana-message = "4.2.4"
+solana-transaction = "4.1.5"
+solana-signer = "3.0.1"
+solana-keypair = "3.1.2"
+sha2 = "0.10"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

@@ -1,0 +1,26 @@
+node_modules
+.env
+*.DS_Store
+.vscode
+
+# Anchor / Rust
+.anchor
+target
+**/*.rs.bk
+test-ledger
+.surfpool
+
+# Local validator + keys (never commit keypairs)
+.localnet
+.keys
+
+# Builds
+sdk/dist
+sdk/dist-test
+app/dist
+soladb-node/dist
+soladb-node/data
+
+# Local rehearsal results
+deployments/solana-localnet.json
+deployments/e2e-solana-localnet.json

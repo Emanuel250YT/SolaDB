@@ -1,0 +1,36 @@
+{
+  "name": "@soladb/sdk",
+  "version": "0.1.0",
+  "description": "SolaDB SDK and CLI: encrypted, replicated file storage on Solana",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "soladb": "dist/cli.js"
+  },
+  "files": ["dist"],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "cli": "node dist/cli.js",
+    "test": "node --test --test-concurrency=1 dist-test/test/*.test.js",
+    "build:test": "tsc -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^1.3.0",
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0",
+    "@solana/kit": "^8.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3"
+  },
+  "repository": {
+    "url": "https://github.com/Emanuel250YT/SolaDB",
+    "type": "git",
+    "directory": "sdk"
+  }
+}

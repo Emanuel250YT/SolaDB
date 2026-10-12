@@ -1,0 +1,11 @@
+# Used only when soladb-node/ itself is the build context.  The image is built
+# from the repo root (it needs ../sdk); that build reads
+# Dockerfile.dockerignore instead.
+node_modules
+dist
+data
+data-local
+coverage
+test
+.env
+*.tsbuildinfo

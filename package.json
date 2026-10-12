@@ -1,0 +1,42 @@
+{
+  "name": "soladb",
+  "version": "2.0.0",
+  "description": "SolaDB — private, replicated file storage on Solana",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "sdk",
+    "app"
+  ],
+  "scripts": {
+    "build:program": "anchor build",
+    "test:program": "cargo test -p soladb",
+    "localnet": "bash scripts/localnet.sh",
+    "export-idl": "tsx scripts/export-idl.ts",
+    "build:sdk": "npm run build -w @soladb/sdk",
+    "test:sdk": "npm run build:test -w @soladb/sdk && npm test -w @soladb/sdk",
+    "deploy:devnet": "bash scripts/deploy.sh devnet",
+    "deploy:mainnet": "bash scripts/deploy.sh mainnet",
+    "init:localnet": "tsx scripts/init.ts localnet",
+    "init:devnet": "tsx scripts/init.ts devnet",
+    "init:mainnet": "tsx scripts/init.ts mainnet",
+    "fund-replicator:devnet": "tsx scripts/fund-replicator.ts devnet",
+    "e2e:localnet": "tsx scripts/e2e.ts localnet",
+    "e2e:devnet": "tsx scripts/e2e.ts devnet",
+    "measure-costs": "tsx scripts/measure-costs.ts",
+    "app:dev": "npm run dev -w @soladb/app",
+    "app:build": "npm run build -w @soladb/app"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  },
+  "repository": {
+    "url": "https://github.com/Emanuel250YT/SolaDB",
+    "type": "git"
+  }
+}

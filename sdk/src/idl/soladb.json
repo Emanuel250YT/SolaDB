@@ -1,0 +1,2284 @@
+{
+  "address": "SoLA2LWHLmxARYxNKqtUaKMyttMwZ7WwnSHEgf47vu2",
+  "metadata": {
+    "name": "soladb",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "SolaDB: private, replicated file storage on Solana"
+  },
+  "instructions": [
+    {
+      "name": "close_chunk",
+      "discriminator": [
+        150,
+        183,
+        213,
+        198,
+        0,
+        74,
+        14,
+        170
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "chunk"
+          ]
+        },
+        {
+          "name": "chunk",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "confirm_replication",
+      "discriminator": [
+        93,
+        250,
+        147,
+        72,
+        25,
+        222,
+        153,
+        197
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "replicator"
+          ]
+        },
+        {
+          "name": "replicator",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  112,
+                  108,
+                  105,
+                  99,
+                  97,
+                  116,
+                  111,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "chunk",
+          "writable": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "create_record",
+      "discriminator": [
+        116,
+        124,
+        63,
+        58,
+        126,
+        204,
+        178,
+        10
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "identity",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  100,
+                  101,
+                  110,
+                  116,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "account",
+                "path": "identity.record_nonce",
+                "account": "Identity"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "schema",
+          "type": "string"
+        },
+        {
+          "name": "content",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "delete_record",
+      "discriminator": [
+        177,
+        191,
+        85,
+        153,
+        140,
+        226,
+        175,
+        112
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "record"
+          ]
+        },
+        {
+          "name": "record",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "grant_access",
+      "discriminator": [
+        66,
+        88,
+        87,
+        113,
+        39,
+        22,
+        27,
+        165
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "record"
+          ]
+        },
+        {
+          "name": "record",
+          "writable": true
+        },
+        {
+          "name": "viewer_identity",
+          "docs": [
+            "The viewer must have published an encryption key"
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  100,
+                  101,
+                  110,
+                  116,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "viewer_identity.user",
+                "account": "Identity"
+              }
+            ]
+          }
+        },
+        {
+          "name": "grant",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  114,
+                  97,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record"
+              },
+              {
+                "kind": "account",
+                "path": "viewer_identity.user",
+                "account": "Identity"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "content",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "initialize",
+      "docs": [
+        "Create the configuration (upgrade authority only)"
+      ],
+      "discriminator": [
+        175,
+        175,
+        109,
+        31,
+        13,
+        152,
+        155,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program",
+          "address": "SoLA2LWHLmxARYxNKqtUaKMyttMwZ7WwnSHEgf47vu2"
+        },
+        {
+          "name": "program_data",
+          "docs": [
+            "Only the upgrade authority can create the configuration, so nobody can",
+            "front-run the deployer between `deploy` and `initialize`."
+          ]
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "ConfigParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "open_chunk",
+      "discriminator": [
+        155,
+        75,
+        98,
+        161,
+        7,
+        120,
+        134,
+        140
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "identity",
+          "docs": [
+            "Uploaders must have published an encryption key"
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  100,
+                  101,
+                  110,
+                  116,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "chunk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  104,
+                  117,
+                  110,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "arg",
+                "path": "args.content_hash"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "OpenChunkArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "reclaim_unreplicated",
+      "discriminator": [
+        163,
+        237,
+        96,
+        92,
+        253,
+        85,
+        158,
+        169
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "chunk"
+          ]
+        },
+        {
+          "name": "chunk",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "register_identity",
+      "discriminator": [
+        164,
+        118,
+        227,
+        177,
+        47,
+        176,
+        187,
+        248
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "identity",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  100,
+                  101,
+                  110,
+                  116,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "encryption_key",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "register_replicator",
+      "discriminator": [
+        201,
+        222,
+        161,
+        187,
+        248,
+        247,
+        170,
+        125
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority"
+        },
+        {
+          "name": "replicator",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  112,
+                  108,
+                  105,
+                  99,
+                  97,
+                  116,
+                  111,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "endpoint",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "revoke_access",
+      "discriminator": [
+        106,
+        128,
+        38,
+        169,
+        103,
+        238,
+        102,
+        147
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "record",
+            "grant"
+          ]
+        },
+        {
+          "name": "record",
+          "writable": true,
+          "relations": [
+            "grant"
+          ]
+        },
+        {
+          "name": "grant",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "set_replicator_active",
+      "discriminator": [
+        235,
+        125,
+        239,
+        149,
+        134,
+        13,
+        216,
+        123
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "replicator",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  112,
+                  108,
+                  105,
+                  99,
+                  97,
+                  116,
+                  111,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "replicator.authority",
+                "account": "Replicator"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "active",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "transfer_admin",
+      "discriminator": [
+        42,
+        242,
+        66,
+        106,
+        228,
+        10,
+        111,
+        156
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_admin",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "update_config",
+      "discriminator": [
+        29,
+        158,
+        252,
+        191,
+        10,
+        83,
+        219,
+        99
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "ConfigParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "update_grant",
+      "discriminator": [
+        182,
+        221,
+        48,
+        175,
+        27,
+        156,
+        166,
+        93
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "grant"
+          ]
+        },
+        {
+          "name": "grant",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "content",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "update_identity",
+      "discriminator": [
+        130,
+        54,
+        88,
+        104,
+        222,
+        124,
+        238,
+        252
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "signer": true
+        },
+        {
+          "name": "identity",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  100,
+                  101,
+                  110,
+                  116,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "encryption_key",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "update_record",
+      "discriminator": [
+        54,
+        194,
+        108,
+        162,
+        199,
+        12,
+        5,
+        60
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "record"
+          ]
+        },
+        {
+          "name": "record",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "content",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "update_replicator_endpoint",
+      "discriminator": [
+        243,
+        50,
+        209,
+        26,
+        228,
+        129,
+        228,
+        116
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "replicator"
+          ]
+        },
+        {
+          "name": "replicator",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  112,
+                  108,
+                  105,
+                  99,
+                  97,
+                  116,
+                  111,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "endpoint",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "write_segment",
+      "discriminator": [
+        60,
+        168,
+        221,
+        70,
+        212,
+        92,
+        204,
+        58
+      ],
+      "accounts": [
+        {
+          "name": "writer",
+          "signer": true,
+          "relations": [
+            "chunk"
+          ]
+        },
+        {
+          "name": "chunk",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "index",
+          "type": "u32"
+        },
+        {
+          "name": "data",
+          "type": "bytes"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Chunk",
+      "discriminator": [
+        134,
+        67,
+        80,
+        65,
+        135,
+        143,
+        156,
+        196
+      ]
+    },
+    {
+      "name": "Config",
+      "discriminator": [
+        155,
+        12,
+        170,
+        224,
+        30,
+        250,
+        204,
+        130
+      ]
+    },
+    {
+      "name": "Grant",
+      "discriminator": [
+        161,
+        166,
+        11,
+        205,
+        204,
+        135,
+        205,
+        54
+      ]
+    },
+    {
+      "name": "Identity",
+      "discriminator": [
+        58,
+        132,
+        5,
+        12,
+        176,
+        164,
+        85,
+        112
+      ]
+    },
+    {
+      "name": "Record",
+      "discriminator": [
+        254,
+        233,
+        117,
+        252,
+        76,
+        166,
+        146,
+        139
+      ]
+    },
+    {
+      "name": "Replicator",
+      "discriminator": [
+        147,
+        172,
+        116,
+        120,
+        198,
+        181,
+        110,
+        75
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "AccessGranted",
+      "discriminator": [
+        21,
+        212,
+        83,
+        192,
+        198,
+        26,
+        62,
+        185
+      ]
+    },
+    {
+      "name": "AccessRevoked",
+      "discriminator": [
+        200,
+        160,
+        73,
+        43,
+        201,
+        165,
+        43,
+        159
+      ]
+    },
+    {
+      "name": "ChunkClosed",
+      "discriminator": [
+        172,
+        114,
+        66,
+        140,
+        48,
+        106,
+        73,
+        166
+      ]
+    },
+    {
+      "name": "ChunkCompleted",
+      "discriminator": [
+        219,
+        46,
+        176,
+        176,
+        170,
+        16,
+        250,
+        57
+      ]
+    },
+    {
+      "name": "ChunkCooled",
+      "discriminator": [
+        35,
+        64,
+        56,
+        229,
+        251,
+        174,
+        200,
+        237
+      ]
+    },
+    {
+      "name": "ChunkOpened",
+      "discriminator": [
+        10,
+        61,
+        14,
+        91,
+        215,
+        32,
+        54,
+        205
+      ]
+    },
+    {
+      "name": "ConfigUpdated",
+      "discriminator": [
+        40,
+        241,
+        230,
+        122,
+        11,
+        19,
+        198,
+        194
+      ]
+    },
+    {
+      "name": "IdentityRegistered",
+      "discriminator": [
+        5,
+        243,
+        147,
+        84,
+        8,
+        116,
+        238,
+        24
+      ]
+    },
+    {
+      "name": "RecordCreated",
+      "discriminator": [
+        7,
+        2,
+        32,
+        66,
+        135,
+        168,
+        104,
+        225
+      ]
+    },
+    {
+      "name": "RecordDeleted",
+      "discriminator": [
+        126,
+        72,
+        56,
+        173,
+        183,
+        249,
+        7,
+        164
+      ]
+    },
+    {
+      "name": "RecordUpdated",
+      "discriminator": [
+        22,
+        215,
+        203,
+        119,
+        23,
+        134,
+        237,
+        84
+      ]
+    },
+    {
+      "name": "ReplicationConfirmed",
+      "discriminator": [
+        246,
+        194,
+        100,
+        114,
+        54,
+        212,
+        25,
+        152
+      ]
+    },
+    {
+      "name": "ReplicatorUpdated",
+      "discriminator": [
+        72,
+        252,
+        238,
+        237,
+        91,
+        32,
+        39,
+        77
+      ]
+    },
+    {
+      "name": "UnreplicatedReclaimed",
+      "discriminator": [
+        121,
+        92,
+        122,
+        228,
+        26,
+        226,
+        67,
+        160
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidProgramData",
+      "msg": "Program data account does not belong to this program"
+    },
+    {
+      "code": 6001,
+      "name": "NotUpgradeAuthority",
+      "msg": "Only the program upgrade authority can initialize SolaDB"
+    },
+    {
+      "code": 6002,
+      "name": "InvalidParameter",
+      "msg": "A configuration value is out of range"
+    },
+    {
+      "code": 6003,
+      "name": "ZeroAddress",
+      "msg": "Address must not be the default public key"
+    },
+    {
+      "code": 6004,
+      "name": "InvalidEndpoint",
+      "msg": "Endpoint is empty or longer than 128 bytes"
+    },
+    {
+      "code": 6005,
+      "name": "InvalidTreasury",
+      "msg": "Treasury account does not match the configuration"
+    },
+    {
+      "code": 6006,
+      "name": "InvalidSize",
+      "msg": "Chunk size must be between 1 byte and 1 MiB"
+    },
+    {
+      "code": 6007,
+      "name": "InvalidSegmentSize",
+      "msg": "Segment size must be between 32 and 4000 bytes"
+    },
+    {
+      "code": 6008,
+      "name": "TooManySegments",
+      "msg": "Chunk would have more than 4096 segments"
+    },
+    {
+      "code": 6009,
+      "name": "InvalidReplicas",
+      "msg": "Replicas must be between 1 and 16"
+    },
+    {
+      "code": 6010,
+      "name": "FeeAboveMax",
+      "msg": "Upload fee is above the max_fee the uploader accepted"
+    },
+    {
+      "code": 6011,
+      "name": "Overflow",
+      "msg": "Arithmetic overflow"
+    },
+    {
+      "code": 6012,
+      "name": "NotWriter",
+      "msg": "Signer is not the chunk writer"
+    },
+    {
+      "code": 6013,
+      "name": "ChunkNotPending",
+      "msg": "Chunk is no longer accepting segments"
+    },
+    {
+      "code": 6014,
+      "name": "InvalidSegmentIndex",
+      "msg": "Segment index out of range"
+    },
+    {
+      "code": 6015,
+      "name": "SegmentAlreadyWritten",
+      "msg": "Segment was already written"
+    },
+    {
+      "code": 6016,
+      "name": "InvalidSegmentLength",
+      "msg": "Segment length does not match the chunk layout"
+    },
+    {
+      "code": 6017,
+      "name": "ReplicatorInactive",
+      "msg": "Replicator is not active"
+    },
+    {
+      "code": 6018,
+      "name": "ChunkIncomplete",
+      "msg": "Chunk is still being written"
+    },
+    {
+      "code": 6019,
+      "name": "AlreadyReplicated",
+      "msg": "Replicator already confirmed this chunk"
+    },
+    {
+      "code": 6020,
+      "name": "FullyReplicated",
+      "msg": "Chunk already has all its replicas"
+    },
+    {
+      "code": 6021,
+      "name": "ReplicationClosed",
+      "msg": "Uploader closed this chunk to new replicas"
+    },
+    {
+      "code": 6022,
+      "name": "ReplicationWindowOpen",
+      "msg": "Replication window is still open"
+    },
+    {
+      "code": 6023,
+      "name": "NothingToClaim",
+      "msg": "Nothing to reclaim"
+    },
+    {
+      "code": 6024,
+      "name": "ChunkNotSettled",
+      "msg": "Chunk still owes replicas inside its replication window"
+    },
+    {
+      "code": 6025,
+      "name": "NotOwner",
+      "msg": "Signer is not the owner"
+    },
+    {
+      "code": 6026,
+      "name": "InvalidContent",
+      "msg": "Content is empty or longer than 2048 bytes"
+    },
+    {
+      "code": 6027,
+      "name": "InvalidSchema",
+      "msg": "Schema is longer than 32 bytes"
+    },
+    {
+      "code": 6028,
+      "name": "CannotGrantSelf",
+      "msg": "Owner cannot grant access to itself"
+    },
+    {
+      "code": 6029,
+      "name": "RecordHasViewers",
+      "msg": "Revoke every viewer before deleting the record"
+    },
+    {
+      "code": 6030,
+      "name": "GrantMismatch",
+      "msg": "Grant does not belong to this record"
+    }
+  ],
+  "types": [
+    {
+      "name": "AccessGranted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "viewer",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AccessRevoked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "viewer",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Chunk",
+      "docs": [
+        "One chunk of encrypted data (PDA `[\"chunk\", owner, content_hash]`).",
+        "",
+        "The bytes never live in account state: each `write_segment` carries a",
+        "slice in its instruction data, so the ledger holds the chunk while it is",
+        "Hot.  The account keeps the commitment (sha256), the segment bitmap, the",
+        "replicas that confirmed and the escrowed rewards."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "content_hash",
+            "docs": [
+              "sha256 of the full chunk; also the PDA seed"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "writer",
+            "docs": [
+              "Key allowed to write segments (the owner or a session key)"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "state",
+            "type": {
+              "defined": {
+                "name": "ChunkState"
+              }
+            }
+          },
+          {
+            "name": "needs_replicas",
+            "docs": [
+              "Complete, not reclaimed and still short of replicas (replicators filter on it)"
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "reclaimed",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "required_replicas",
+            "type": "u8"
+          },
+          {
+            "name": "confirmed_replicas",
+            "type": "u8"
+          },
+          {
+            "name": "segment_size",
+            "type": "u16"
+          },
+          {
+            "name": "segments_total",
+            "type": "u32"
+          },
+          {
+            "name": "segments_written",
+            "type": "u32"
+          },
+          {
+            "name": "size",
+            "type": "u32"
+          },
+          {
+            "name": "reward_per_replica",
+            "docs": [
+              "Lamports escrowed in this account for each replica"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "opened_at",
+            "type": "i64"
+          },
+          {
+            "name": "completed_at",
+            "type": "i64"
+          },
+          {
+            "name": "reclaimable_at",
+            "type": "i64"
+          },
+          {
+            "name": "segments",
+            "docs": [
+              "Bit `i` is set once segment `i` is in the ledger"
+            ],
+            "type": "bytes"
+          },
+          {
+            "name": "replicators",
+            "docs": [
+              "Replicators that confirmed, in order"
+            ],
+            "type": {
+              "vec": "pubkey"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ChunkClosed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "chunk",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ChunkCompleted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "chunk",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "size",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ChunkCooled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "chunk",
+            "type": "pubkey"
+          },
+          {
+            "name": "confirmed_replicas",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ChunkOpened",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "chunk",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "content_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "size",
+            "type": "u32"
+          },
+          {
+            "name": "required_replicas",
+            "type": "u8"
+          },
+          {
+            "name": "fee",
+            "type": "u64"
+          },
+          {
+            "name": "protocol_fee",
+            "type": "u64"
+          },
+          {
+            "name": "reward_per_replica",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ChunkState",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Pending"
+          },
+          {
+            "name": "Hot"
+          },
+          {
+            "name": "Cool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Config",
+      "docs": [
+        "Protocol settings (PDA `[\"config\"]`)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury",
+            "docs": [
+              "Receives the protocol share of every upload"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "base_fee_per_replica",
+            "docs": [
+              "Flat fee per requested replica, in lamports (covers the confirmation)"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "price_per_byte",
+            "docs": [
+              "Price per byte per requested replica, in lamports (disk + bandwidth)"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "protocol_fee_bps",
+            "docs": [
+              "Share of each upload kept by the protocol, in basis points"
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "replication_threshold_pct",
+            "docs": [
+              "Percentage of the requested replicas that turns a chunk Cool"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "replication_window",
+            "docs": [
+              "Seconds replicators have before the uploader can reclaim empty slots"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ConfigParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "treasury",
+            "type": "pubkey"
+          },
+          {
+            "name": "base_fee_per_replica",
+            "type": "u64"
+          },
+          {
+            "name": "price_per_byte",
+            "type": "u64"
+          },
+          {
+            "name": "protocol_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "replication_threshold_pct",
+            "type": "u8"
+          },
+          {
+            "name": "replication_window",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ConfigUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury",
+            "type": "pubkey"
+          },
+          {
+            "name": "base_fee_per_replica",
+            "type": "u64"
+          },
+          {
+            "name": "price_per_byte",
+            "type": "u64"
+          },
+          {
+            "name": "protocol_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "replication_threshold_pct",
+            "type": "u8"
+          },
+          {
+            "name": "replication_window",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Grant",
+      "docs": [
+        "A reader's copy of a record (PDA `[\"grant\", record, viewer]`), sealed to",
+        "the viewer's encryption key."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "viewer",
+            "type": "pubkey"
+          },
+          {
+            "name": "granted_at",
+            "type": "i64"
+          },
+          {
+            "name": "updated_at",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "content",
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Identity",
+      "docs": [
+        "Public X25519 key other users seal data to (PDA `[\"identity\", user]`)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "user",
+            "type": "pubkey"
+          },
+          {
+            "name": "encryption_key",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "registered_at",
+            "type": "i64"
+          },
+          {
+            "name": "updated_at",
+            "type": "i64"
+          },
+          {
+            "name": "record_nonce",
+            "docs": [
+              "Seeds the next record address of this user"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "IdentityRegistered",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "user",
+            "type": "pubkey"
+          },
+          {
+            "name": "encryption_key",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "OpenChunkArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "content_hash",
+            "docs": [
+              "sha256 of the full chunk"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "size",
+            "docs": [
+              "Chunk length in bytes"
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "segment_size",
+            "docs": [
+              "Bytes per `write_segment` (the last one may be shorter)"
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "replicas",
+            "type": "u8"
+          },
+          {
+            "name": "writer",
+            "docs": [
+              "Key allowed to write the segments (the owner or a session key)"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "max_fee",
+            "docs": [
+              "Abort if the quote is above this many lamports"
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Record",
+      "docs": [
+        "Encrypted record (PDA `[\"record\", owner, nonce]`).  `content` is sealed",
+        "to the owner's encryption key; readers get their own copy in a Grant."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "created_at",
+            "type": "i64"
+          },
+          {
+            "name": "updated_at",
+            "type": "i64"
+          },
+          {
+            "name": "viewer_count",
+            "type": "u32"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "schema",
+            "docs": [
+              "Unencrypted schema hint, e.g. `soladb.file.v2`"
+            ],
+            "type": "string"
+          },
+          {
+            "name": "content",
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RecordCreated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "schema",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RecordDeleted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RecordUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ReplicationConfirmed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "chunk",
+            "type": "pubkey"
+          },
+          {
+            "name": "replicator",
+            "type": "pubkey"
+          },
+          {
+            "name": "reward",
+            "type": "u64"
+          },
+          {
+            "name": "confirmed_replicas",
+            "type": "u8"
+          },
+          {
+            "name": "required_replicas",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Replicator",
+      "docs": [
+        "Storage node approved by the admin (PDA `[\"replicator\", authority]`)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "active",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "registered_at",
+            "type": "i64"
+          },
+          {
+            "name": "confirmations",
+            "type": "u64"
+          },
+          {
+            "name": "lamports_earned",
+            "type": "u64"
+          },
+          {
+            "name": "endpoint",
+            "docs": [
+              "HTTP endpoint that serves `/chunk/:id/data`"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ReplicatorUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "active",
+            "type": "bool"
+          },
+          {
+            "name": "endpoint",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "UnreplicatedReclaimed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "chunk",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    }
+  ]
+}

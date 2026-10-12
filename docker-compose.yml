@@ -1,0 +1,45 @@
+# One replicator node + its Oracle metadata store.
+#   cp soladb-node/.env.example soladb-node/.env   # replicator keypair, RPC, NODE_ENDPOINT
+#   ORACLE_SYS_PASSWORD=... ORACLE_PASSWORD=... docker compose up -d --build
+# The replicator keypair file is mounted read-only from ./.keys.
+services:
+  oracle:
+    image: gvenzl/oracle-free:23-slim-faststart
+    environment:
+      ORACLE_PASSWORD: ${ORACLE_SYS_PASSWORD:?set ORACLE_SYS_PASSWORD}
+      APP_USER: soladb
+      APP_USER_PASSWORD: ${ORACLE_PASSWORD:?set ORACLE_PASSWORD}
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+    volumes:
+      - oracle-data:/opt/oracle/oradata
+
+  soladb-node:
+    build:
+      context: .
+      dockerfile: soladb-node/Dockerfile
+    env_file: ./soladb-node/.env
+    environment:
+      CHUNK_STORE: rocksdb
+      METADATA_STORE: oracle
+      ORACLE_USER: soladb
+      ORACLE_PASSWORD: ${ORACLE_PASSWORD}
+      ORACLE_CONNECTION_STRING: oracle:1521/FREEPDB1
+      ROCKSDB_PATH: /app/data/rocksdb
+      REPLICATOR_KEYPAIR: /run/keys/replicator.json
+    depends_on:
+      oracle:
+        condition: service_healthy
+    ports:
+      - "${NODE_PORT:-3000}:3000"
+    volumes:
+      - node-data:/app/data
+      - ${REPLICATOR_KEYPAIR_FILE:-./.keys/devnet-replicator.json}:/run/keys/replicator.json:ro
+    restart: unless-stopped
+
+volumes:
+  oracle-data:
+  node-data:
