@@ -69,12 +69,11 @@ jobs:
 
   node:
     runs-on: ubuntu-latest
+    # rocksdb's prebuilt binary crashes on recent glibc (ubuntu-latest) and its
+    # sources no longer compile with GCC 13+, so build on Debian bookworm
+    container: node:22-bookworm
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-          cache: npm
       - run: npm ci && npm run build:sdk
       - run: npm ci
         working-directory: soladb-node

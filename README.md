@@ -151,7 +151,7 @@ ORACLE_SYS_PASSWORD=... ORACLE_PASSWORD=... docker compose up -d --build
 
 The replicator keypair is mounted from `./.keys/devnet-replicator.json` (override with `REPLICATOR_KEYPAIR_FILE`).
 
-Without Docker (file-based stores, for development):
+Without Docker (file-based stores, for development). On Linux with a recent glibc (Ubuntu 24.04 and later) the `rocksdb` dependency neither loads its prebuilt binary nor compiles, so use Docker, Windows, macOS or Debian bookworm there:
 
 ```sh
 npm run build:sdk
