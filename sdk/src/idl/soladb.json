@@ -8,6 +8,127 @@
   },
   "instructions": [
     {
+      "name": "claim_shard_rewards",
+      "discriminator": [
+        47,
+        112,
+        188,
+        228,
+        54,
+        64,
+        150,
+        123
+      ],
+      "accounts": [
+        {
+          "name": "holder",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "replicator",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  112,
+                  108,
+                  105,
+                  99,
+                  97,
+                  116,
+                  111,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "holder"
+              }
+            ]
+          }
+        },
+        {
+          "name": "blob",
+          "writable": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "index",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "close_blob",
+      "discriminator": [
+        242,
+        49,
+        100,
+        123,
+        220,
+        59,
+        147,
+        9
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "blob"
+          ]
+        },
+        {
+          "name": "blob",
+          "writable": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "close_chunk",
       "discriminator": [
         150,
@@ -104,9 +225,119 @@
               }
             ]
           }
+        },
+        {
+          "name": "owner",
+          "writable": true
         }
       ],
       "args": []
+    },
+    {
+      "name": "confirm_shard",
+      "discriminator": [
+        123,
+        179,
+        149,
+        99,
+        238,
+        47,
+        150,
+        249
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "replicator"
+          ]
+        },
+        {
+          "name": "replicator",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  112,
+                  108,
+                  105,
+                  99,
+                  97,
+                  116,
+                  111,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "blob",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "index",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "create_challenge",
+      "discriminator": [
+        170,
+        244,
+        47,
+        1,
+        1,
+        15,
+        173,
+        239
+      ],
+      "accounts": [
+        {
+          "name": "challenger",
+          "signer": true
+        },
+        {
+          "name": "blob",
+          "writable": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "index",
+          "type": "u8"
+        }
+      ]
     },
     {
       "name": "create_record",
@@ -222,6 +453,117 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "extend_blob",
+      "discriminator": [
+        2,
+        192,
+        191,
+        14,
+        75,
+        97,
+        192,
+        191
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "blob"
+          ]
+        },
+        {
+          "name": "blob",
+          "writable": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "epochs",
+          "type": "u32"
+        },
+        {
+          "name": "max_fee",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "fail_challenge",
+      "discriminator": [
+        142,
+        224,
+        182,
+        53,
+        27,
+        104,
+        80,
+        198
+      ],
+      "accounts": [
+        {
+          "name": "reporter",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "blob",
+          "writable": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "index",
+          "type": "u8"
+        }
+      ]
     },
     {
       "name": "grant_access",
@@ -383,6 +725,114 @@
       ]
     },
     {
+      "name": "open_blob",
+      "discriminator": [
+        44,
+        94,
+        207,
+        31,
+        215,
+        63,
+        52,
+        195
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "identity",
+          "docs": [
+            "Uploaders must have published an encryption key"
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  100,
+                  101,
+                  110,
+                  116,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "blob",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  108,
+                  111,
+                  98
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "arg",
+                "path": "args.root"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "OpenBlobArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "open_chunk",
       "discriminator": [
         155,
@@ -486,6 +936,65 @@
           "type": {
             "defined": {
               "name": "OpenChunkArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "prove_shard",
+      "discriminator": [
+        3,
+        91,
+        85,
+        169,
+        214,
+        195,
+        94,
+        94
+      ],
+      "accounts": [
+        {
+          "name": "prover",
+          "signer": true
+        },
+        {
+          "name": "blob",
+          "writable": true
+        },
+        {
+          "name": "slot_hashes",
+          "address": "SysvarS1otHashes111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "index",
+          "type": "u8"
+        },
+        {
+          "name": "segment",
+          "type": "bytes"
+        },
+        {
+          "name": "shard_proof",
+          "type": {
+            "vec": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        },
+        {
+          "name": "top_proof",
+          "type": {
+            "vec": {
+              "array": [
+                "u8",
+                32
+              ]
             }
           }
         }
@@ -1091,6 +1600,19 @@
   ],
   "accounts": [
     {
+      "name": "Blob",
+      "discriminator": [
+        48,
+        230,
+        204,
+        234,
+        142,
+        194,
+        54,
+        53
+      ]
+    },
+    {
       "name": "Chunk",
       "discriminator": [
         134,
@@ -1194,6 +1716,45 @@
         165,
         43,
         159
+      ]
+    },
+    {
+      "name": "BlobClosed",
+      "discriminator": [
+        15,
+        15,
+        226,
+        200,
+        230,
+        200,
+        200,
+        233
+      ]
+    },
+    {
+      "name": "BlobExtended",
+      "discriminator": [
+        109,
+        103,
+        246,
+        48,
+        137,
+        12,
+        183,
+        133
+      ]
+    },
+    {
+      "name": "BlobOpened",
+      "discriminator": [
+        120,
+        164,
+        85,
+        78,
+        218,
+        243,
+        174,
+        224
       ]
     },
     {
@@ -1340,6 +1901,71 @@
       ]
     },
     {
+      "name": "ShardChallenged",
+      "discriminator": [
+        128,
+        155,
+        219,
+        201,
+        125,
+        146,
+        229,
+        195
+      ]
+    },
+    {
+      "name": "ShardConfirmed",
+      "discriminator": [
+        148,
+        90,
+        138,
+        37,
+        168,
+        167,
+        10,
+        96
+      ]
+    },
+    {
+      "name": "ShardLost",
+      "discriminator": [
+        230,
+        8,
+        163,
+        27,
+        128,
+        60,
+        18,
+        159
+      ]
+    },
+    {
+      "name": "ShardProven",
+      "discriminator": [
+        154,
+        247,
+        154,
+        181,
+        29,
+        217,
+        197,
+        189
+      ]
+    },
+    {
+      "name": "ShardRewardsClaimed",
+      "discriminator": [
+        203,
+        51,
+        255,
+        17,
+        141,
+        227,
+        83,
+        39
+      ]
+    },
+    {
       "name": "UnreplicatedReclaimed",
       "discriminator": [
         121,
@@ -1387,7 +2013,7 @@
     {
       "code": 6006,
       "name": "InvalidSize",
-      "msg": "Chunk size must be between 1 byte and 1 MiB"
+      "msg": "Chunk size must be between 1 byte and 1 MiB (16 MiB for direct chunks)"
     },
     {
       "code": 6007,
@@ -1508,6 +2134,106 @@
       "code": 6030,
       "name": "GrantMismatch",
       "msg": "Grant does not belong to this record"
+    },
+    {
+      "code": 6031,
+      "name": "InvalidChunkOwner",
+      "msg": "Account is not the chunk owner"
+    },
+    {
+      "code": 6032,
+      "name": "InvalidShardLayout",
+      "msg": "Shards must be 1 ≤ k ≤ n ≤ 32 and the shard size a positive multiple of 1024 bytes"
+    },
+    {
+      "code": 6033,
+      "name": "InvalidEpochs",
+      "msg": "Epochs must be between 1 and 1200"
+    },
+    {
+      "code": 6034,
+      "name": "InvalidShardIndex",
+      "msg": "Shard index out of range"
+    },
+    {
+      "code": 6035,
+      "name": "SlotOccupied",
+      "msg": "This shard slot already has a holder"
+    },
+    {
+      "code": 6036,
+      "name": "SlotVacant",
+      "msg": "This shard slot has no holder"
+    },
+    {
+      "code": 6037,
+      "name": "NotHolder",
+      "msg": "Signer is not the holder of this shard"
+    },
+    {
+      "code": 6038,
+      "name": "AlreadyHolder",
+      "msg": "This replicator already holds a shard of the blob"
+    },
+    {
+      "code": 6039,
+      "name": "BlobExpired",
+      "msg": "The blob has expired"
+    },
+    {
+      "code": 6040,
+      "name": "BlobNotExpired",
+      "msg": "The blob has not expired yet"
+    },
+    {
+      "code": 6041,
+      "name": "ChallengeOpen",
+      "msg": "A challenge is already open on this shard"
+    },
+    {
+      "code": 6042,
+      "name": "ChallengeCooldown",
+      "msg": "This shard was challenged too recently"
+    },
+    {
+      "code": 6043,
+      "name": "NoChallenge",
+      "msg": "No open challenge on this shard"
+    },
+    {
+      "code": 6044,
+      "name": "ChallengeNotReady",
+      "msg": "The challenge slot has not been produced yet"
+    },
+    {
+      "code": 6045,
+      "name": "ChallengeExpired",
+      "msg": "The challenge deadline has passed"
+    },
+    {
+      "code": 6046,
+      "name": "ChallengeStillOpen",
+      "msg": "The challenge deadline has not passed yet"
+    },
+    {
+      "code": 6047,
+      "name": "SlotHashUnavailable",
+      "msg": "The challenge slot is no longer in SlotHashes"
+    },
+    {
+      "code": 6048,
+      "name": "InvalidProof",
+      "msg": "Storage proof does not match the blob root"
+    },
+    {
+      "code": 6049,
+      "name": "InvalidSegment",
+      "msg": "A storage proof answers with one 1024-byte segment"
+    },
+    {
+      "code": 6050,
+      "name": "BlobNotClosable",
+      "msg": "The blob still has holders or is inside its abort delay"
     }
   ],
   "types": [
@@ -1552,14 +2278,238 @@
       }
     },
     {
+      "name": "Blob",
+      "docs": [
+        "An erasure-coded payload (PDA `[\"blob\", owner, root]`), see",
+        "docs/blob-protocol.md.  One account per blob whatever its size: `root`",
+        "commits to every shard, nodes hold one shard each and are paid per epoch",
+        "once they prove they still have it."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "root",
+            "docs": [
+              "Merkle root over the shard roots"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "state",
+            "type": {
+              "defined": {
+                "name": "BlobState"
+              }
+            }
+          },
+          {
+            "name": "needs_holders",
+            "docs": [
+              "Some slot is vacant and the blob has not expired (nodes filter on it)"
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "data_shards",
+            "docs": [
+              "Shards needed to reconstruct (`k`)"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "total_shards",
+            "docs": [
+              "Shards stored (`n = k + m`)"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "held",
+            "docs": [
+              "Slots with a holder"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "shard_size",
+            "docs": [
+              "Bytes per shard, a multiple of SEGMENT_SIZE"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "payload_size",
+            "docs": [
+              "Encrypted payload bytes (informative)"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "epochs",
+            "type": "u32"
+          },
+          {
+            "name": "reward_per_shard_epoch",
+            "docs": [
+              "Escrowed reward of one shard slot for one epoch"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "opened_at",
+            "type": "i64"
+          },
+          {
+            "name": "expires_at",
+            "type": "i64"
+          },
+          {
+            "name": "slots",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "ShardSlot"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "BlobClosed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "blob",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BlobExtended",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "blob",
+            "type": "pubkey"
+          },
+          {
+            "name": "epochs",
+            "type": "u32"
+          },
+          {
+            "name": "expires_at",
+            "type": "i64"
+          },
+          {
+            "name": "fee",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BlobOpened",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "blob",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "data_shards",
+            "type": "u8"
+          },
+          {
+            "name": "total_shards",
+            "type": "u8"
+          },
+          {
+            "name": "shard_size",
+            "type": "u64"
+          },
+          {
+            "name": "epochs",
+            "type": "u32"
+          },
+          {
+            "name": "fee",
+            "type": "u64"
+          },
+          {
+            "name": "protocol_fee",
+            "type": "u64"
+          },
+          {
+            "name": "reward_per_shard_epoch",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BlobState",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Hot"
+          },
+          {
+            "name": "Cool"
+          }
+        ]
+      }
+    },
+    {
       "name": "Chunk",
       "docs": [
         "One chunk of encrypted data (PDA `[\"chunk\", owner, content_hash]`).",
         "",
-        "The bytes never live in account state: each `write_segment` carries a",
-        "slice in its instruction data, so the ledger holds the chunk while it is",
-        "Hot.  The account keeps the commitment (sha256), the segment bitmap, the",
-        "replicas that confirmed and the escrowed rewards."
+        "The bytes never live in account state.  A *ledger* chunk is written in",
+        "segments carried by `write_segment` instruction data, so the ledger holds",
+        "it while it is Hot.  A *direct* chunk (`segment_size == 0`) is sent by the",
+        "uploader straight to replicators, which check it against `content_hash`:",
+        "no segment transactions at all.  The account keeps the commitment",
+        "(sha256), the segment bitmap, the replicas that confirmed and the escrowed",
+        "rewards, and closes itself (rent back to the owner) once every replica",
+        "confirmed."
       ],
       "type": {
         "kind": "struct",
@@ -1813,9 +2763,10 @@
             "type": "u64"
           },
           {
-            "name": "price_per_byte",
+            "name": "price_per_mib",
             "docs": [
-              "Price per byte per requested replica, in lamports (disk + bandwidth)"
+              "Price per MiB per requested replica, in lamports (disk + bandwidth),",
+              "charged pro rata to the byte"
             ],
             "type": "u64"
           },
@@ -1843,6 +2794,41 @@
           {
             "name": "bump",
             "type": "u8"
+          },
+          {
+            "name": "epoch_seconds",
+            "docs": [
+              "Blob storage is prepaid per epoch of this many seconds"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "price_per_mib_epoch",
+            "docs": [
+              "Lamports per MiB of shard per epoch, charged pro rata to the byte"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "challenge_window_slots",
+            "docs": [
+              "Slots a holder has to answer a challenge after its target slot"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "challenge_cooldown",
+            "docs": [
+              "Seconds between two challenges of the same shard slot"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "challenger_bounty_bps",
+            "docs": [
+              "Share of forfeited rewards paid to whoever reports a failed challenge"
+            ],
+            "type": "u16"
           }
         ]
       }
@@ -1861,7 +2847,7 @@
             "type": "u64"
           },
           {
-            "name": "price_per_byte",
+            "name": "price_per_mib",
             "type": "u64"
           },
           {
@@ -1875,6 +2861,26 @@
           {
             "name": "replication_window",
             "type": "i64"
+          },
+          {
+            "name": "epoch_seconds",
+            "type": "i64"
+          },
+          {
+            "name": "price_per_mib_epoch",
+            "type": "u64"
+          },
+          {
+            "name": "challenge_window_slots",
+            "type": "u64"
+          },
+          {
+            "name": "challenge_cooldown",
+            "type": "i64"
+          },
+          {
+            "name": "challenger_bounty_bps",
+            "type": "u16"
           }
         ]
       }
@@ -1897,7 +2903,7 @@
             "type": "u64"
           },
           {
-            "name": "price_per_byte",
+            "name": "price_per_mib",
             "type": "u64"
           },
           {
@@ -1911,6 +2917,14 @@
           {
             "name": "replication_window",
             "type": "i64"
+          },
+          {
+            "name": "epoch_seconds",
+            "type": "i64"
+          },
+          {
+            "name": "price_per_mib_epoch",
+            "type": "u64"
           }
         ]
       }
@@ -2020,6 +3034,68 @@
       }
     },
     {
+      "name": "OpenBlobArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "root",
+            "docs": [
+              "Merkle root over the shard roots (docs/blob-protocol.md §2)"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "data_shards",
+            "docs": [
+              "Shards needed to reconstruct (`k`)"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "total_shards",
+            "docs": [
+              "Shards stored (`n = k + m`)"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "shard_size",
+            "docs": [
+              "Bytes per shard, a multiple of SEGMENT_SIZE"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "payload_size",
+            "docs": [
+              "Encrypted payload bytes (informative)"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "epochs",
+            "docs": [
+              "Storage prepaid, in epochs of `config.epoch_seconds`"
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "max_fee",
+            "docs": [
+              "Abort if the quote is above this many lamports"
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
       "name": "OpenChunkArgs",
       "type": {
         "kind": "struct",
@@ -2046,7 +3122,8 @@
           {
             "name": "segment_size",
             "docs": [
-              "Bytes per `write_segment` (the last one may be shorter)"
+              "Bytes per `write_segment` (the last one may be shorter); 0 = direct",
+              "chunk: the uploader sends the bytes straight to replicators"
             ],
             "type": "u16"
           },
@@ -2256,6 +3333,184 @@
           {
             "name": "endpoint",
             "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ShardChallenged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "blob",
+            "type": "pubkey"
+          },
+          {
+            "name": "index",
+            "type": "u8"
+          },
+          {
+            "name": "holder",
+            "type": "pubkey"
+          },
+          {
+            "name": "challenge_slot",
+            "type": "u64"
+          },
+          {
+            "name": "deadline",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ShardConfirmed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "blob",
+            "type": "pubkey"
+          },
+          {
+            "name": "index",
+            "type": "u8"
+          },
+          {
+            "name": "holder",
+            "type": "pubkey"
+          },
+          {
+            "name": "held",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ShardLost",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "blob",
+            "type": "pubkey"
+          },
+          {
+            "name": "index",
+            "type": "u8"
+          },
+          {
+            "name": "holder",
+            "type": "pubkey"
+          },
+          {
+            "name": "forfeited",
+            "type": "u64"
+          },
+          {
+            "name": "bounty",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ShardProven",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "blob",
+            "type": "pubkey"
+          },
+          {
+            "name": "index",
+            "type": "u8"
+          },
+          {
+            "name": "holder",
+            "type": "pubkey"
+          },
+          {
+            "name": "segment",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ShardRewardsClaimed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "blob",
+            "type": "pubkey"
+          },
+          {
+            "name": "index",
+            "type": "u8"
+          },
+          {
+            "name": "holder",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ShardSlot",
+      "docs": [
+        "One erasure-coded shard position of a blob"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "holder",
+            "docs": [
+              "Replicator holding the shard; the default key = vacant"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "proven_at",
+            "docs": [
+              "Last successful storage proof (or the confirmation)"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "claimed_until",
+            "docs": [
+              "Rewards are paid up to this time"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "last_challenge_at",
+            "type": "i64"
+          },
+          {
+            "name": "challenge_slot",
+            "docs": [
+              "Slot whose hash picks the challenged segment; 0 = no open challenge"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "challenge_deadline",
+            "docs": [
+              "Last slot to answer the open challenge"
+            ],
+            "type": "u64"
           }
         ]
       }

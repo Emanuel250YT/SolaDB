@@ -7,6 +7,8 @@ edition = "2021"
 rust-version = "1.89.0"
 
 [profile.release]
+# Smallest binary: deploy rent is paid per byte of program (CU stay far below limits)
+opt-level = "z"
 overflow-checks = true
 lto = "fat"
 codegen-units = 1

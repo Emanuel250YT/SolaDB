@@ -3,6 +3,10 @@ export const FILE_SCHEMA = 'soladb.file.v2';
 
 const VERSION = 2;
 const FLAG_INDEX = 1;
+/** Chunks went straight to replicators: no ledger copy to fall back on */
+const FLAG_DIRECT = 2;
+/** The plaintext was gzip-compressed before encryption */
+const FLAG_GZIP = 4;
 const MAX_NAME_BYTES = 200;
 const MAX_MIME_BYTES = 100;
 
@@ -13,7 +17,7 @@ const MAX_MIME_BYTES = 100;
  * Binary layout (little endian), kept compact because every byte of a record
  * costs rent and must fit in one transaction:
  *
- *   u8 version | u8 flags | u64 size | u32 createdAt | u32 chunkSize
+ *   u8 version | u8 flags (INDEX 1, DIRECT 2, GZIP 4) | u64 size | u32 createdAt | u32 chunkSize
  *   [32] sha256 | [32] dek | u8 nameLen | name | u8 mimeLen | mime
  *   u16 chunkCount | flags & INDEX ? [32] indexHash : chunkCount × [32] chunkHash
  */
@@ -21,9 +25,9 @@ export interface FileManifest {
   v: 2;
   name: string;
   mime: string;
-  /** Plaintext size in bytes */
+  /** Plaintext size in bytes (before compression) */
   size: number;
-  /** Plaintext bytes per chunk */
+  /** Bytes per chunk before encryption (after compression) */
   chunkSize: number;
   /** sha256 of the plaintext */
   sha256: Uint8Array;
@@ -37,6 +41,10 @@ export interface FileManifest {
   chunks: Uint8Array[];
   /** sha256 of the encrypted chunk that lists the chunk hashes (large files) */
   index?: Uint8Array;
+  /** Chunks were sent straight to replicators (no ledger copy) */
+  direct?: boolean;
+  /** The plaintext was compressed before encryption */
+  compression?: 'gzip';
 }
 
 function utf8Truncate(value: string, max: number): Uint8Array {
@@ -56,7 +64,7 @@ export function encodeManifest(m: FileManifest): Uint8Array {
   const view = new DataView(out.buffer);
   let o = 0;
   out[o++] = VERSION;
-  out[o++] = m.index ? FLAG_INDEX : 0;
+  out[o++] = (m.index ? FLAG_INDEX : 0) | (m.direct ? FLAG_DIRECT : 0) | (m.compression === 'gzip' ? FLAG_GZIP : 0);
   view.setBigUint64(o, BigInt(m.size), true);
   o += 8;
   view.setUint32(o, m.createdAt, true);
@@ -122,6 +130,8 @@ export function decodeManifest(bytes: Uint8Array): FileManifest {
     chunkCount,
     chunks: hasIndex ? [] : hashes,
     ...(hasIndex ? { index: hashes[0] } : {}),
+    ...(flags & FLAG_DIRECT ? { direct: true } : {}),
+    ...(flags & FLAG_GZIP ? { compression: 'gzip' as const } : {}),
   };
 }
 

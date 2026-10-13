@@ -5,6 +5,7 @@ import { SolanaModule } from './solana/solana.module';
 import { StorageModule } from './storage/storage.module';
 import { ReplicatorModule } from './replicator/replicator.module';
 import { QueryModule } from './query/query.module';
+import { BlobModule } from './blobs/blob.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { QueryModule } from './query/query.module';
     StorageModule,
     ReplicatorModule,
     QueryModule,
+    BlobModule,
   ],
 })
 export class AppModule { }

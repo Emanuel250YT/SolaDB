@@ -137,6 +137,14 @@ export type InstructionName =
   | 'confirmReplication'
   | 'reclaimUnreplicated'
   | 'closeChunk'
+  | 'openBlob'
+  | 'confirmShard'
+  | 'createChallenge'
+  | 'proveShard'
+  | 'failChallenge'
+  | 'claimShardRewards'
+  | 'extendBlob'
+  | 'closeBlob'
   | 'createRecord'
   | 'updateRecord'
   | 'deleteRecord'
@@ -183,7 +191,7 @@ export function hasDiscriminator(data: Uint8Array, discriminator: Uint8Array): b
 
 // ── Accounts ─────────────────────────────────────────────────────────────────
 
-export type AccountName = 'Config' | 'Identity' | 'Replicator' | 'Chunk' | 'Record' | 'Grant';
+export type AccountName = 'Config' | 'Identity' | 'Replicator' | 'Chunk' | 'Blob' | 'Record' | 'Grant';
 
 const accountDiscriminators = new Map<string, Uint8Array>(
   (idl.accounts as { name: string; discriminator: number[] }[]).map((a) => [a.name, Uint8Array.from(a.discriminator)]),

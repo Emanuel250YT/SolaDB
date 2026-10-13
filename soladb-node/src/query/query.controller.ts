@@ -4,13 +4,14 @@ import {
   Get,
   Param,
   Post,
+  Put,
   Res,
   UsePipes,
   ValidationPipe,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiBody, ApiConsumes, ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Response } from 'express';
 import { QueryService } from './query.service';
 import { QueryDto } from './dto/query.dto';
@@ -26,6 +27,7 @@ import { QueryDto } from './dto/query.dto';
  *   POST /query                     — JSON query language (filter, sort, page)
  *   GET  /chunk/:chunkId/meta       — local metadata, else the on-chain Chunk account
  *   GET  /chunk/:chunkId/data       — raw binary data (served as octet-stream)
+ *   PUT  /chunk/:chunkId/data       — push a direct chunk (raw bytes, ≤ 16 MiB)
  */
 @ApiTags('SolaDB')
 @Controller()
@@ -93,5 +95,35 @@ export class QueryController {
     res.setHeader('X-Chunk-Id', chunkId);
     res.setHeader('Content-Length', data.length);
     res.send(data);
+  }
+
+  /**
+   * Uploaders send each direct chunk here (raw encrypted bytes).  The node
+   * keeps it only when it matches a direct Chunk account that still needs
+   * replicas (size + sha256), then confirms it on-chain.
+   */
+  @Put('chunk/:chunkId/data')
+  @ApiOperation({ summary: 'Push a direct chunk (raw encrypted bytes, at most 16 MiB)' })
+  @ApiParam({ name: 'chunkId', description: 'Chunk account address (base58)' })
+  @ApiConsumes('application/octet-stream')
+  @ApiBody({ schema: { type: 'string', format: 'binary' } })
+  @ApiResponse({
+    status: 201,
+    description: 'Stored by this push: { stored, confirmed, signature?, reason? } (reason: why it is not confirmed)',
+  })
+  @ApiResponse({ status: 200, description: 'This node already confirmed the chunk: { stored: true, confirmed: true }' })
+  @ApiResponse({ status: 400, description: 'Size or sha256 does not match the Chunk account' })
+  @ApiResponse({ status: 403, description: 'The owner is not in REPLICATE_OWNERS' })
+  @ApiResponse({ status: 404, description: 'No such chunk account (yet: retry shortly after opening it)' })
+  @ApiResponse({ status: 409, description: 'Not a direct chunk, reclaimed, or it needs no more replicas' })
+  @ApiResponse({ status: 413, description: 'Larger than 16 MiB' })
+  async pushChunkData(
+    @Param('chunkId') chunkId: string,
+    @Body() body: Buffer,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const { status, ...result } = await this.queryService.pushChunkData(chunkId, body);
+    res.status(status);
+    return result;
   }
 }

@@ -2,11 +2,15 @@
 //!
 //! * **Identity**: each wallet publishes the X25519 key others seal data to.
 //! * **Storage**: a file is split into encrypted chunks.  A chunk is opened
-//!   (and paid for), then its bytes are written to the *ledger* in segments
-//!   carried by `write_segment` instruction data.  Replicator nodes rebuild
-//!   the chunk from those transactions, check its sha256, store it and call
-//!   `confirm_replication`, which pays them from the chunk escrow.  Once
-//!   enough replicas confirm, the chunk turns Cool.
+//!   (and paid for), then its bytes either go straight to replicator nodes
+//!   (*direct* chunks, the cheap default) or are written to the *ledger* in
+//!   segments carried by `write_segment` instruction data.  Replicators check
+//!   the chunk's sha256, store it and call `confirm_replication`, which pays
+//!   them from the chunk escrow.  Once enough replicas confirm, the chunk
+//!   turns Cool; the last confirmation closes it and refunds its rent.
+//! * **Blobs**: large payloads as `k + m` Reed-Solomon shards on `n` nodes,
+//!   one account per blob (a Merkle root), storage prepaid per epoch and
+//!   unlocked by challenge/response storage proofs (docs/blob-protocol.md).
 //! * **Records**: the file manifest (chunk list + data key) is sealed to the
 //!   owner's key and stored in a record; each reader gets a sealed copy in a
 //!   grant account.
@@ -92,6 +96,46 @@ pub mod soladb {
 
     pub fn close_chunk(ctx: Context<CloseChunk>) -> Result<()> {
         instructions::storage::handle_close_chunk(ctx)
+    }
+
+    // ── Blobs (erasure-coded shards, storage proofs) ────────────────────────
+
+    pub fn open_blob(ctx: Context<OpenBlob>, args: OpenBlobArgs) -> Result<()> {
+        instructions::blobs::handle_open_blob(ctx, args)
+    }
+
+    pub fn confirm_shard(ctx: Context<ConfirmShard>, index: u8) -> Result<()> {
+        instructions::blobs::handle_confirm_shard(ctx, index)
+    }
+
+    pub fn create_challenge(ctx: Context<CreateChallenge>, index: u8) -> Result<()> {
+        instructions::blobs::handle_create_challenge(ctx, index)
+    }
+
+    pub fn prove_shard(
+        ctx: Context<ProveShard>,
+        index: u8,
+        segment: Vec<u8>,
+        shard_proof: Vec<[u8; 32]>,
+        top_proof: Vec<[u8; 32]>,
+    ) -> Result<()> {
+        instructions::blobs::handle_prove_shard(ctx, index, segment, shard_proof, top_proof)
+    }
+
+    pub fn fail_challenge(ctx: Context<FailChallenge>, index: u8) -> Result<()> {
+        instructions::blobs::handle_fail_challenge(ctx, index)
+    }
+
+    pub fn claim_shard_rewards(ctx: Context<ClaimShardRewards>, index: u8) -> Result<()> {
+        instructions::blobs::handle_claim_shard_rewards(ctx, index)
+    }
+
+    pub fn extend_blob(ctx: Context<ExtendBlob>, epochs: u32, max_fee: u64) -> Result<()> {
+        instructions::blobs::handle_extend_blob(ctx, epochs, max_fee)
+    }
+
+    pub fn close_blob(ctx: Context<CloseBlob>) -> Result<()> {
+        instructions::blobs::handle_close_blob(ctx)
     }
 
     // ── Records ─────────────────────────────────────────────────────────────

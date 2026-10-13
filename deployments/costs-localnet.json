@@ -1,90 +1,161 @@
 {
-  "measuredAt": "2026-10-12T18:40:31.784Z",
+  "measuredAt": "2026-10-13T01:51:26.948Z",
+  "pricing": {
+    "baseFeePerReplica": "10000",
+    "pricePerMib": "20000",
+    "pricePerMibEpoch": "200",
+    "epochSeconds": 2592000,
+    "protocolFeeBps": 1000
+  },
   "computeUnits": {
-    "register_identity": 6813,
-    "open_chunk + create_record (1 chunk)": 27793,
-    "confirm_replication": 9195,
-    "write_segment (v0, 1010 bytes)": 3712,
-    "write_segment (v1, 3864 bytes)": 3722
+    "register_identity": 11459,
+    "open_chunk (direct) + create_record": 46582,
+    "confirm_replication (last replica, closes the chunk)": 15835,
+    "open_chunk (ledger) + create_record": 49132,
+    "confirm_replication": 16376,
+    "write_segment (v1, 3864 bytes)": 7623,
+    "open_blob": 27434
   },
   "files": [
     {
-      "size": "1 KiB",
-      "tx": "v1",
+      "size": "100 KiB",
+      "mode": "direct",
       "chunks": 1,
-      "segmentTxs": 1,
+      "segmentTxs": 0,
       "walletTxs": 1,
-      "uploadFee": "44208",
-      "rentDeposit": "5477520",
-      "networkFees": "15000",
-      "quotedTotal": "5339888",
-      "spent": "5536728",
-      "seconds": 1.68
-    },
-    {
-      "size": "1 KiB",
-      "tx": "v0",
-      "chunks": 1,
-      "segmentTxs": 2,
-      "walletTxs": 1,
-      "uploadFee": "44208",
-      "rentDeposit": "5477520",
-      "networkFees": "20000",
-      "quotedTotal": "5344888",
-      "spent": "5541728",
-      "seconds": 1.633
+      "uploadFee": "23908",
+      "networkFees": "5000",
+      "heldDuringUpload": "5520348",
+      "keptRecordRent": "3013680",
+      "realCost": "28908",
+      "seconds": 0.595
     },
     {
       "size": "100 KiB",
-      "tx": "v1",
+      "mode": "ledger",
       "chunks": 1,
       "segmentTxs": 27,
       "walletTxs": 1,
-      "uploadFee": "449712",
-      "rentDeposit": "5512320",
+      "uploadFee": "23908",
       "networkFees": "145000",
-      "quotedTotal": "5896272",
-      "spent": "6107032",
-      "seconds": 3.286
-    },
-    {
-      "size": "100 KiB",
-      "tx": "v0",
-      "chunks": 1,
-      "segmentTxs": 102,
-      "walletTxs": 1,
-      "uploadFee": "449712",
-      "rentDeposit": "5574960",
-      "networkFees": "520000",
-      "quotedTotal": "6333912",
-      "spent": "6544672",
-      "seconds": 8.102
+      "heldDuringUpload": "5688188",
+      "keptRecordRent": "3013680",
+      "realCost": "168908",
+      "seconds": 1.717
     },
     {
       "size": "1 MiB",
-      "tx": "v1",
+      "mode": "direct",
+      "chunks": 1,
+      "segmentTxs": 0,
+      "walletTxs": 1,
+      "uploadFee": "60002",
+      "networkFees": "5000",
+      "heldDuringUpload": "5563402",
+      "keptRecordRent": "3020640",
+      "realCost": "65002",
+      "seconds": 0.6
+    },
+    {
+      "size": "1 MiB",
+      "mode": "ledger",
       "chunks": 4,
       "segmentTxs": 272,
       "walletTxs": 2,
-      "uploadFee": "4354752",
-      "rentDeposit": "13843440",
+      "uploadFee": "120008",
       "networkFees": "1375000",
-      "quotedTotal": "19350472",
-      "spent": "19573192",
-      "seconds": 19.246
+      "heldDuringUpload": "15345408",
+      "keptRecordRent": "3688800",
+      "realCost": "1495008",
+      "seconds": 4.139
+    },
+    {
+      "size": "10 MiB",
+      "mode": "direct",
+      "chunks": 2,
+      "segmentTxs": 0,
+      "walletTxs": 1,
+      "uploadFee": "440004",
+      "networkFees": "5000",
+      "heldDuringUpload": "8650844",
+      "keptRecordRent": "3250320",
+      "realCost": "445004",
+      "seconds": 0.92
+    },
+    {
+      "size": "10 MiB",
+      "mode": "ledger",
+      "chunks": 41,
+      "segmentTxs": 2721,
+      "walletTxs": 7,
+      "uploadFee": "1220130",
+      "networkFees": "13645000",
+      "heldDuringUpload": "121993450",
+      "keptRecordRent": "3027600",
+      "realCost": "14865130",
+      "seconds": 26.788
+    }
+  ],
+  "blobs": [
+    {
+      "size": "1 MiB",
+      "layout": "2+1",
+      "storedBytes": 1622016,
+      "epochs": 12,
+      "storageDays": 360,
+      "storageFee": "33714",
+      "networkFee": "5000",
+      "blobRent": "3271200"
     },
     {
       "size": "1 MiB",
-      "tx": "v0",
-      "chunks": 4,
-      "segmentTxs": 1040,
-      "walletTxs": 2,
-      "uploadFee": "4354752",
-      "rentDeposit": "14511600",
-      "networkFees": "5215000",
-      "quotedTotal": "23858632",
-      "spent": "24081352",
-      "seconds": 70.614
+      "layout": "10+4",
+      "storedBytes": 1490944,
+      "epochs": 12,
+      "storageDays": 360,
+      "storageFee": "143416",
+      "networkFee": "5000",
+      "blobRent": "8783520"
+    },
+    {
+      "size": "100 MiB",
+      "layout": "2+1",
+      "storedBytes": 160432128,
+      "epochs": 12,
+      "storageDays": 360,
+      "storageFee": "397200",
+      "networkFee": "5000",
+      "blobRent": "3271200"
+    },
+    {
+      "size": "100 MiB",
+      "layout": "10+4",
+      "storedBytes": 154140672,
+      "epochs": 12,
+      "storageDays": 360,
+      "storageFee": "492800",
+      "networkFee": "5000",
+      "blobRent": "8783520"
+    },
+    {
+      "size": "1 GiB",
+      "layout": "2+1",
+      "storedBytes": 1613758464,
+      "epochs": 12,
+      "storageDays": 360,
+      "storageFee": "3723600",
+      "networkFee": "5000",
+      "blobRent": "3271200"
+    },
+    {
+      "size": "1 GiB",
+      "layout": "10+4",
+      "storedBytes": 1512046592,
+      "epochs": 12,
+      "storageDays": 360,
+      "storageFee": "3600800",
+      "networkFee": "5000",
+      "blobRent": "8783520"
     }
   ]
 }

@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Address, isAddress } from '@solana/kit';
 import { StorageService } from '../storage/storage.service';
 import { SolanaService } from '../solana/solana.service';
-import { ReplicatorService } from '../replicator/replicator.service';
+import { PushResult, ReplicatorService } from '../replicator/replicator.service';
 import { QueryDto } from './dto/query.dto';
 import { chunkRecordFromAccount, ChunkRecord } from '../storage/metadata-store';
 
@@ -51,6 +51,18 @@ export class QueryService {
       );
     }
     return raw;
+  }
+
+  /**
+   * A direct chunk pushed by its uploader: the replicator checks it against
+   * the Chunk account, stores it and confirms it.
+   */
+  async pushChunkData(chunkId: string, body: unknown): Promise<PushResult> {
+    this._assertChunkId(chunkId);
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      throw new BadRequestException('Send the chunk bytes as an application/octet-stream body');
+    }
+    return this.replicator.acceptPush(chunkId as Address, body);
   }
 
   /**

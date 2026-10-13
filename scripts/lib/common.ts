@@ -88,10 +88,15 @@ export interface Deployment {
   pricing: {
     treasury: string;
     baseFeePerReplicaLamports: string;
-    pricePerByteLamports: string;
+    pricePerMibLamports: string;
     protocolFeeBps: number;
     replicationThresholdPct: number;
     replicationWindowSeconds: number;
+    epochSeconds: number;
+    pricePerMibEpochLamports: string;
+    challengeWindowSlots: number;
+    challengeCooldownSeconds: number;
+    challengerBountyBps: number;
   };
   replicators: { authority: string; endpoint: string }[];
   /** Public replicator endpoints advertised to SDK users */

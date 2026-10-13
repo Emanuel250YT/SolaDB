@@ -1,14 +1,78 @@
-# One replicator node + its Oracle metadata store.
+# One replicator node + its storage:
+#   • MinIO    (S3 API)  chunk bytes and blob shards   (CHUNK_STORE=s3, BLOB_STORE=s3)
+#   • Postgres           chunk / blob-shard metadata   (METADATA_STORE=postgres)
+#   • Oracle   (optional, profile "oracle")            the previous metadata store
+#
 #   cp soladb-node/.env.example soladb-node/.env   # replicator keypair, RPC, NODE_ENDPOINT
-#   ORACLE_SYS_PASSWORD=... ORACLE_PASSWORD=... docker compose up -d --build
-# The replicator keypair file is mounted read-only from ./.keys.
+#   docker compose up -d --build
+#
+# Oracle instead of Postgres:
+#   METADATA_STORE=oracle ORACLE_SYS_PASSWORD=... ORACLE_PASSWORD=... \
+#     docker compose --profile oracle up -d --build
+# RocksDB / local files instead of MinIO: CHUNK_STORE=rocksdb BLOB_STORE=fs
+# A managed object store (R2, B2, S3) or database: override S3_* / DATABASE_URL
+# under soladb-node.environment (or drop the minio / postgres services).
+#
+# Every password below defaults to a development placeholder: set real ones
+# (shell environment or a .env file next to this compose file) before
+# exposing anything. The replicator keypair file is mounted read-only from ./.keys.
 services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: soladb
+      POSTGRES_DB: soladb
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-soladb-dev-password}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U soladb -d soladb"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-soladb-dev}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-soladb-dev-password}
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    ports:
+      # web console, local machine only
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+
+  # One-shot: creates the bucket (idempotent), then exits
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-soladb-dev}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-soladb-dev-password}
+      S3_BUCKET: ${S3_BUCKET:-soladb}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" && mc mb --ignore-existing "local/$$S3_BUCKET"
+    restart: "no"
+
   oracle:
+    profiles: ["oracle"]
     image: gvenzl/oracle-free:23-slim-faststart
     environment:
-      ORACLE_PASSWORD: ${ORACLE_SYS_PASSWORD:?set ORACLE_SYS_PASSWORD}
+      ORACLE_PASSWORD: ${ORACLE_SYS_PASSWORD:-soladb-dev-sys-password}
       APP_USER: soladb
-      APP_USER_PASSWORD: ${ORACLE_PASSWORD:?set ORACLE_PASSWORD}
+      APP_USER_PASSWORD: ${ORACLE_PASSWORD:-soladb-dev-password}
     healthcheck:
       test: ["CMD", "healthcheck.sh"]
       interval: 10s
@@ -23,23 +87,41 @@ services:
       dockerfile: soladb-node/Dockerfile
     env_file: ./soladb-node/.env
     environment:
-      CHUNK_STORE: rocksdb
-      METADATA_STORE: oracle
+      CHUNK_STORE: ${CHUNK_STORE:-s3}
+      METADATA_STORE: ${METADATA_STORE:-postgres}
+      BLOB_STORE: ${BLOB_STORE:-s3}
+      # MinIO (path-style URLs); the node checks the bucket at boot
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: us-east-1
+      S3_FORCE_PATH_STYLE: "true"
+      S3_BUCKET: ${S3_BUCKET:-soladb}
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-soladb-dev}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-soladb-dev-password}
+      DATABASE_URL: postgres://soladb:${POSTGRES_PASSWORD:-soladb-dev-password}@postgres:5432/soladb
+      # Used with METADATA_STORE=oracle (profile "oracle")
       ORACLE_USER: soladb
-      ORACLE_PASSWORD: ${ORACLE_PASSWORD}
+      ORACLE_PASSWORD: ${ORACLE_PASSWORD:-soladb-dev-password}
       ORACLE_CONNECTION_STRING: oracle:1521/FREEPDB1
       ROCKSDB_PATH: /app/data/rocksdb
       REPLICATOR_KEYPAIR: /run/keys/replicator.json
     depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
       oracle:
         condition: service_healthy
+        required: false # only waited for with --profile oracle
     ports:
       - "${NODE_PORT:-3000}:3000"
     volumes:
+      # RocksDB / fs stores, and the blob staging area (uploads in flight)
       - node-data:/app/data
       - ${REPLICATOR_KEYPAIR_FILE:-./.keys/devnet-replicator.json}:/run/keys/replicator.json:ro
     restart: unless-stopped
 
 volumes:
+  postgres-data:
+  minio-data:
   oracle-data:
   node-data:
