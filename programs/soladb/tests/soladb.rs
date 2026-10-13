@@ -2178,6 +2178,22 @@ fn a_challenge_window_without_blocks_is_voided_not_slashed() {
     assert_eq!(after.held, 1);
     assert_eq!(env.balance(&reporter.pubkey()), before - 5_000, "no bounty");
 
+    // a single block at the deadline gave a hash, but no block was left to carry the proof
+    env.challenge(&owner, &address, 0).unwrap();
+    let state: Blob = env.fetch(&address);
+    let (target, deadline) = (
+        state.slots[0].challenge_slot,
+        state.slots[0].challenge_deadline,
+    );
+    env.warp_slots(CHALLENGE_DELAY_SLOTS + CHALLENGE_WINDOW + 5);
+    env.set_slot_hashes(&[target - 3, deadline, deadline + 3]);
+    env.fail(&reporter, &address, 0).unwrap();
+    assert_eq!(
+        env.fetch::<Blob>(&address).slots[0].holder,
+        node.pubkey(),
+        "voided: the holder could not have answered"
+    );
+
     // a window that had blocks the holder ignored is still slashed
     env.challenge(&owner, &address, 0).unwrap();
     let target = env.fetch::<Blob>(&address).slots[0].challenge_slot;

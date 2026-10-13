@@ -387,6 +387,27 @@ impl<'a> SlotHashesView<'a> {
         Ok(Some(self.entry(lo - 1)?))
     }
 
+    /// A challenge on `start` could be answered by `deadline`: a produced slot
+    /// `p1 ≥ start` gives the hash, and a later produced slot `p2 ≤ deadline`
+    /// is a block the proof could land in (it sees `p1` in SlotHashes)
+    fn answerable(&self, start: u64, deadline: u64) -> Result<bool> {
+        // entries descend: `at` = how many have a slot ≥ start
+        let (mut lo, mut hi) = (0usize, self.len);
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if self.entry(mid)?.0 >= start {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        if lo < 2 {
+            return Ok(false);
+        }
+        // the oldest slot ≥ start, then the next newer one
+        Ok(self.entry(lo - 2)?.0 <= deadline)
+    }
+
     /// Oldest slot still recorded
     fn oldest(&self) -> Result<Option<u64>> {
         if self.len == 0 {
@@ -417,8 +438,8 @@ pub struct FailChallenge<'info> {
 /// The holder of shard `index` let a challenge expire: it loses the slot and
 /// its unclaimed rewards (a share goes to whoever reports it).  The slot
 /// reopens, so another node can rebuild the shard from the others.  If
-/// SlotHashes shows that no block was produced between the challenge slot
-/// and the deadline, the holder never had a hash to answer with: the
+/// SlotHashes shows the window never allowed an answer (no block giving the
+/// hash, or no later block before the deadline to carry the proof), the
 /// challenge is voided instead, with no penalty and no bounty.
 pub fn handle_fail_challenge(ctx: Context<FailChallenge>, index: u8) -> Result<()> {
     let clock = Clock::get()?;
@@ -438,9 +459,7 @@ pub fn handle_fail_challenge(ctx: Context<FailChallenge>, index: u8) -> Result<(
     let covered = hashes
         .oldest()?
         .is_some_and(|oldest| oldest <= slot.challenge_slot);
-    let answerable = hashes
-        .first_at_or_after(slot.challenge_slot)?
-        .is_some_and(|(produced, _)| produced <= slot.challenge_deadline);
+    let answerable = hashes.answerable(slot.challenge_slot, slot.challenge_deadline)?;
     if covered && !answerable {
         let slot = &mut blob.slots[index as usize];
         slot.challenge_slot = 0;

@@ -156,9 +156,11 @@ rest is escrowed in the blob account; `reward_per_shard_epoch =
   unclaimed rewards are forfeited (`challenger_bounty_bps` of them to the
   caller, the rest stays in escrow), `needs_holders = true`, `held −= 1`
   (below `k` → Hot). Needs the SlotHashes sysvar: if it still reaches back to
-  `challenge_slot` and shows **no block produced in `[challenge_slot,
-  deadline]`**, nobody could have answered, so the challenge is voided
-  instead (no penalty, no bounty).
+  `challenge_slot` and the window never allowed an answer, the challenge is
+  voided instead (no penalty, no bounty). An answer needs **two** produced
+  slots `challenge_slot ≤ p1 < p2 ≤ deadline`: `p1` gives the hash, `p2` is a
+  block the proof can land in. A lone block at the deadline gives a hash but
+  leaves no block to answer in.
 - `claim_shard_rewards(index)` — the holder is paid
   `reward_per_shard_epoch · (min(proven_at, expires_at) − claimed_until) / epoch_seconds`;
   `claimed_until` moves forward. Rewards unlock only up to the last proof.
