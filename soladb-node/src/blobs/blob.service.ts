@@ -19,6 +19,7 @@ import {
   blobRoot,
   challengedSegment,
   ConfigAccount,
+  depth,
   FetchedAccount,
   fragmentProof,
   packHashes,
@@ -149,6 +150,7 @@ export class BlobService implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly minRewardLamports: bigint;
   private readonly nodeEndpoint: string;
   private readonly leafCacheLimit: number;
+  private readonly maxShardBytes: number;
   private lastChallengeRound = 0;
 
   constructor(
@@ -165,6 +167,7 @@ export class BlobService implements OnApplicationBootstrap, OnModuleDestroy {
     this.minRewardLamports = this.configService.get<bigint>('replication.minRewardLamports') ?? 0n;
     this.nodeEndpoint = (this.configService.get<string>('replication.nodeEndpoint') ?? '').replace(/\/$/, '');
     this.leafCacheLimit = this.configService.get<number>('blobs.leafCacheBytes') ?? 256 * 1024 * 1024;
+    this.maxShardBytes = this.configService.get<number>('blobs.maxShardBytes') ?? 2 * 1024 * 1024 * 1024;
   }
 
   onApplicationBootstrap(): void {
@@ -244,11 +247,16 @@ export class BlobService implements OnApplicationBootstrap, OnModuleDestroy {
     const other = data.slots.findIndex((s, i) => s.holder === me && i !== index);
     if (other >= 0) throw new ConflictException(`This node already holds shard ${other} of the blob`);
     if (nowSeconds() >= data.expiresAt) throw new ConflictException('The blob has expired');
+    if (data.shardSize > BigInt(this.maxShardBytes)) {
+      throw new PayloadTooLargeException(`This node stores shards of at most ${this.maxShardBytes} bytes (BLOB_MAX_SHARD_BYTES)`);
+    }
 
     const shardSize = Number(data.shardSize);
     let state = this.incoming.get(key);
     if (offset === 0) {
-      const roots = (header.roots ?? '').split(',').filter(Boolean).map((r) => fromHex(r.trim()));
+      const parts = (header.roots ?? '').split(',').map((r) => r.trim()).filter(Boolean);
+      if (parts.some((r) => !/^[0-9a-f]{64}$/i.test(r))) throw new BadRequestException('x-soladb-shard-roots must be 64-character hex roots');
+      const roots = parts.map(fromHex);
       if (roots.length !== data.totalShards || roots.some((r) => r.length !== 32)) {
         throw new BadRequestException(`x-soladb-shard-roots must list ${data.totalShards} hex roots`);
       }
@@ -468,7 +476,7 @@ export class BlobService implements OnApplicationBootstrap, OnModuleDestroy {
     const now = nowSeconds();
     const candidates = (await this.solana.listBlobsNeedingHolders()).filter((b) => {
       const d = b.data;
-      if (now >= d.expiresAt || d.held < d.dataShards) return false;
+      if (now >= d.expiresAt || d.held < d.dataShards || d.shardSize > BigInt(this.maxShardBytes)) return false;
       if (d.slots.some((s) => s.holder === me)) return false;
       const remaining = (d.expiresAt - now) * d.rewardPerShardEpoch / (this.config!.epochSeconds || 1n);
       return remaining >= this.minRewardLamports;
@@ -509,6 +517,7 @@ export class BlobService implements OnApplicationBootstrap, OnModuleDestroy {
         const response = await fetch(`${source.url}/blob/${blob.address}/info`, { signal: AbortSignal.timeout(15_000) });
         if (!response.ok) continue;
         const candidate = (await response.json()) as BlobInfo;
+        if (!Array.isArray(candidate.roots) || candidate.roots.some((r) => typeof r !== 'string' || !/^[0-9a-f]{64}$/i.test(r))) continue;
         const roots = candidate.roots.map(fromHex);
         if (roots.length === data.totalShards && hex(blobRoot(roots)) === hex(data.root) && isFragmentSize(candidate.fragmentSize, Number(data.shardSize))) {
           info = candidate;
@@ -532,7 +541,7 @@ export class BlobService implements OnApplicationBootstrap, OnModuleDestroy {
       let have = 0;
       for (const source of sources) {
         if (have >= k) break;
-        const fragment = await this.fetchFragment(source.url, blob.address, source.index, stripe, roots[source.index]);
+        const fragment = await this.fetchFragment(source.url, blob.address, source.index, stripe, roots[source.index], fragmentSize, stripes);
         if (fragment) {
           fragments[source.index] = fragment;
           have++;
@@ -553,13 +562,24 @@ export class BlobService implements OnApplicationBootstrap, OnModuleDestroy {
     await this.confirm(blob.address, target, data);
   }
 
-  private async fetchFragment(url: string, blob: Address, index: number, stripe: number, shardRoot: Uint8Array): Promise<Uint8Array | null> {
+  /** A peer's fragment: exactly `fragmentSize` bytes with a proof of the stripe tree's depth */
+  private async fetchFragment(
+    url: string,
+    blob: Address,
+    index: number,
+    stripe: number,
+    shardRoot: Uint8Array,
+    fragmentSize: number,
+    stripes: number,
+  ): Promise<Uint8Array | null> {
     try {
       const response = await fetch(`${url}/blob/${blob}/shard/${index}/fragment/${stripe}`, { signal: AbortSignal.timeout(30_000) });
       if (!response.ok) return null;
-      const proof = (response.headers.get('x-soladb-proof') ?? '').split(',').filter(Boolean).map(fromHex);
+      const header = (response.headers.get('x-soladb-proof') ?? '').split(',').filter(Boolean);
+      if (header.length !== depth(stripes) || header.some((h) => !/^[0-9a-f]{64}$/i.test(h))) return null;
       const fragment = new Uint8Array(await response.arrayBuffer());
-      return verifyFragment(fragment, stripe, proof, shardRoot) ? fragment : null;
+      if (fragment.length !== fragmentSize) return null;
+      return verifyFragment(fragment, stripe, header.map(fromHex), shardRoot) ? fragment : null;
     } catch {
       return null;
     }

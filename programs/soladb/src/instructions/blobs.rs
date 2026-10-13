@@ -154,11 +154,16 @@ pub struct ConfirmShard<'info> {
 
     #[account(mut)]
     pub blob: Account<'info, Blob>,
+
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, Config>,
 }
 
 /// An active replicator stored shard `index` and checked it against the
-/// blob root: it takes the slot.  Rewards accrue from now and unlock as it
-/// answers challenges.
+/// blob root: it takes the slot.  Taking it opens a challenge right away, so
+/// a node that confirms without the bytes cannot answer and loses the slot
+/// within `challenge_window_slots` (no squatting).  Rewards accrue from now
+/// and unlock as it answers challenges.
 pub fn handle_confirm_shard(ctx: Context<ConfirmShard>, index: u8) -> Result<()> {
     require!(
         ctx.accounts.replicator.active,
@@ -179,13 +184,15 @@ pub fn handle_confirm_shard(ctx: Context<ConfirmShard>, index: u8) -> Result<()>
         SolaDbError::AlreadyHolder
     );
 
+    let clock = Clock::get()?;
+    let challenge_slot = clock.slot + CHALLENGE_DELAY_SLOTS;
     blob.slots[index as usize] = ShardSlot {
         holder: authority,
         proven_at: now,
         claimed_until: now,
         last_challenge_at: now,
-        challenge_slot: 0,
-        challenge_deadline: 0,
+        challenge_slot,
+        challenge_deadline: challenge_slot + ctx.accounts.config.challenge_window_slots,
     };
     blob.held += 1;
     blob.refresh_flags(now);
@@ -296,7 +303,14 @@ pub fn handle_prove_shard(
         SolaDbError::InvalidSegment
     );
 
-    let slot_hash = find_slot_hash(&ctx.accounts.slot_hashes, slot.challenge_slot)?;
+    // A leader may skip the challenge slot: its randomness is then the first
+    // produced slot after it, the same for everyone
+    let slot_hash = match SlotHashesView::new(&ctx.accounts.slot_hashes)?
+        .first_at_or_after(slot.challenge_slot)?
+    {
+        Some((_, hash)) => hash,
+        None => return err!(SolaDbError::ChallengeNotReady),
+    };
     let segments = blob.shard_segments();
     let seed = solana_sha256_hasher::hashv(&[&slot_hash, blob_key.as_ref(), &[index]]).to_bytes();
     let segment_index = u64::from_le_bytes(seed[..8].try_into().unwrap()) % segments;
@@ -324,34 +338,62 @@ pub fn handle_prove_shard(
     Ok(())
 }
 
-/// Hash of `slot` from the SlotHashes sysvar data: `u64 len`, then
-/// `(u64 slot, [u8; 32] hash)` entries, newest first.
-fn find_slot_hash(sysvar: &AccountInfo, slot: u64) -> Result<[u8; 32]> {
-    let data = sysvar.try_borrow_data()?;
-    let len = data
-        .get(..8)
-        .map(|b| u64::from_le_bytes(b.try_into().unwrap()) as usize)
-        .ok_or_else(|| error!(SolaDbError::SlotHashUnavailable))?;
-    let entry = |i: usize| -> Option<(u64, [u8; 32])> {
+/// The SlotHashes sysvar data, read in place: `u64 len`, then
+/// `(u64 slot, [u8; 32] hash)` entries, newest first.  Skipped slots have no
+/// entry.
+struct SlotHashesView<'a> {
+    data: core::cell::Ref<'a, &'a mut [u8]>,
+    len: usize,
+}
+
+impl<'a> SlotHashesView<'a> {
+    fn new(sysvar: &'a AccountInfo) -> Result<Self> {
+        let data = sysvar.try_borrow_data()?;
+        let len = data
+            .get(..8)
+            .map(|b| u64::from_le_bytes(b.try_into().unwrap()) as usize)
+            .ok_or_else(|| error!(SolaDbError::SlotHashUnavailable))?;
+        Ok(Self { data, len })
+    }
+
+    fn entry(&self, i: usize) -> Result<(u64, [u8; 32])> {
         let at = 8 + i * 40;
-        let bytes = data.get(at..at + 40)?;
-        Some((
+        let bytes = self
+            .data
+            .get(at..at + 40)
+            .ok_or_else(|| error!(SolaDbError::SlotHashUnavailable))?;
+        Ok((
             u64::from_le_bytes(bytes[..8].try_into().unwrap()),
             bytes[8..].try_into().unwrap(),
         ))
-    };
-    // binary search over descending slots
-    let (mut lo, mut hi) = (0usize, len);
-    while lo < hi {
-        let mid = (lo + hi) / 2;
-        let (this, hash) = entry(mid).ok_or_else(|| error!(SolaDbError::SlotHashUnavailable))?;
-        match this.cmp(&slot) {
-            core::cmp::Ordering::Equal => return Ok(hash),
-            core::cmp::Ordering::Greater => lo = mid + 1,
-            core::cmp::Ordering::Less => hi = mid,
-        }
     }
-    err!(SolaDbError::SlotHashUnavailable)
+
+    /// The oldest entry whose slot is ≥ `slot`, i.e. the first produced slot
+    /// at or after it (None when no such slot is recorded yet)
+    fn first_at_or_after(&self, slot: u64) -> Result<Option<(u64, [u8; 32])>> {
+        // entries descend: find the last index whose slot is ≥ `slot`
+        let (mut lo, mut hi) = (0usize, self.len);
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if self.entry(mid)?.0 >= slot {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        if lo == 0 {
+            return Ok(None);
+        }
+        Ok(Some(self.entry(lo - 1)?))
+    }
+
+    /// Oldest slot still recorded
+    fn oldest(&self) -> Result<Option<u64>> {
+        if self.len == 0 {
+            return Ok(None);
+        }
+        Ok(Some(self.entry(self.len - 1)?.0))
+    }
 }
 
 // ── fail_challenge ──────────────────────────────────────────────────────────
@@ -366,11 +408,18 @@ pub struct FailChallenge<'info> {
 
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, Config>,
+
+    /// CHECK: the SlotHashes sysvar, read directly (too large to deserialize)
+    #[account(address = SLOT_HASHES_ID)]
+    pub slot_hashes: UncheckedAccount<'info>,
 }
 
 /// The holder of shard `index` let a challenge expire: it loses the slot and
 /// its unclaimed rewards (a share goes to whoever reports it).  The slot
-/// reopens, so another node can rebuild the shard from the others.
+/// reopens, so another node can rebuild the shard from the others.  If
+/// SlotHashes shows that no block was produced between the challenge slot
+/// and the deadline, the holder never had a hash to answer with: the
+/// challenge is voided instead, with no penalty and no bounty.
 pub fn handle_fail_challenge(ctx: Context<FailChallenge>, index: u8) -> Result<()> {
     let clock = Clock::get()?;
     let config = &ctx.accounts.config;
@@ -384,6 +433,25 @@ pub fn handle_fail_challenge(ctx: Context<FailChallenge>, index: u8) -> Result<(
         clock.slot > slot.challenge_deadline,
         SolaDbError::ChallengeStillOpen
     );
+
+    let hashes = SlotHashesView::new(&ctx.accounts.slot_hashes)?;
+    let covered = hashes
+        .oldest()?
+        .is_some_and(|oldest| oldest <= slot.challenge_slot);
+    let answerable = hashes
+        .first_at_or_after(slot.challenge_slot)?
+        .is_some_and(|(produced, _)| produced <= slot.challenge_deadline);
+    if covered && !answerable {
+        let slot = &mut blob.slots[index as usize];
+        slot.challenge_slot = 0;
+        slot.challenge_deadline = 0;
+        emit!(ChallengeVoided {
+            blob: blob_key,
+            index,
+            holder: slot.holder,
+        });
+        return Ok(());
+    }
 
     let until = clock.unix_timestamp.min(blob.expires_at);
     let forfeited = blob.reward_between(config.epoch_seconds, slot.claimed_until, until);

@@ -1522,6 +1522,7 @@ impl Env {
                 authority: node.pubkey(),
                 replicator: replicator_pda(&node.pubkey()),
                 blob: *blob,
+                config: config_pda(),
             },
         );
         self.send(&[ix], &[node])
@@ -1569,6 +1570,7 @@ impl Env {
                 reporter: who.pubkey(),
                 blob: *blob,
                 config: config_pda(),
+                slot_hashes: SLOT_HASHES_ID,
             },
         );
         self.send(&[ix], &[who])
@@ -1611,7 +1613,7 @@ impl Env {
         self.svm.set_sysvar(&clock);
     }
 
-    /// SlotHashes sysvar with one known hash per slot in `slots`
+    /// SlotHashes sysvar with one known hash per slot in `slots` (others = skipped)
     fn set_slot_hashes(&mut self, slots: &[u64]) -> Vec<[u8; 32]> {
         let mut sorted = slots.to_vec();
         sorted.sort_unstable_by(|a, b| b.cmp(a));
@@ -1629,6 +1631,21 @@ impl Env {
         account.data = data;
         self.svm.set_account(SLOT_HASHES_ID, account).unwrap();
         slots.iter().map(|s| sha256(&s.to_le_bytes())).collect()
+    }
+
+    /// Answer the challenge open on `index` (e.g. the one confirm_shard opens)
+    fn answer_open(&mut self, who: &Keypair, blob: &Pubkey, index: u8, data: &TestBlob) {
+        let state: Blob = self.fetch(blob);
+        let target = state.slots[index as usize].challenge_slot;
+        assert_ne!(target, 0, "a challenge is open");
+        let now = self.slot();
+        if now <= target {
+            self.warp_slots(target + 1 - now);
+        }
+        let hash = self.set_slot_hashes(&[target - 1, target, target + 1])[1];
+        let segment = challenged_segment(&hash, blob, index, state.shard_segments());
+        self.prove(who, blob, index, data.answer(index as usize, segment))
+            .unwrap();
     }
 
     /// Open a challenge on `index`, let its slot pass, return the challenged segment
@@ -1775,6 +1792,14 @@ fn shard_holders_fill_the_slots_and_cool_the_blob() {
     assert!(!state.needs_holders);
     assert_eq!(state.slots[1].holder, c.pubkey());
     assert_eq!(state.slots[1].proven_at, state.slots[1].claimed_until);
+    assert_ne!(
+        state.slots[1].challenge_slot, 0,
+        "taking a slot opens a possession challenge"
+    );
+    assert_eq!(
+        state.slots[1].challenge_deadline,
+        state.slots[1].challenge_slot + CHALLENGE_WINDOW
+    );
     assert_eq!(
         env.fetch::<Replicator>(&replicator_pda(&c.pubkey()))
             .confirmations,
@@ -1800,14 +1825,26 @@ fn storage_proofs_answer_challenges_and_unlock_rewards() {
     let node = env.replicator();
     env.confirm_shard(&node, &address, 1).unwrap();
 
-    // nothing to claim before a proof
+    // nothing to claim before a proof; the possession challenge is open
+    assert_error(
+        env.claim(&node, &address, 1),
+        soladb_error(SolaDbError::NothingToClaim),
+    );
+    let watcher = env.user();
+    assert_error(
+        env.challenge(&watcher, &address, 1),
+        soladb_error(SolaDbError::ChallengeOpen),
+    );
+    env.answer_open(&node, &address, 1, &blob);
+    let proven = env.fetch::<Blob>(&address).slots[1];
+    env.claim(&node, &address, 1).ok(); // the seconds since the confirmation
     env.warp(EPOCH / 2);
     assert_error(
         env.claim(&node, &address, 1),
         soladb_error(SolaDbError::NothingToClaim),
     );
+    assert!(proven.proven_at >= proven.claimed_until);
 
-    let watcher = env.user();
     assert_error(
         env.challenge(&watcher, &address, 0),
         soladb_error(SolaDbError::SlotVacant),
@@ -1887,16 +1924,18 @@ fn an_unanswered_challenge_frees_the_slot_and_pays_a_bounty() {
     let blob = TestBlob::new(2, 2, 6);
     let address = env.open_blob(&owner, &blob, 1, 4);
     let (lazy, fresh) = (env.replicator(), env.replicator());
+    // a node confirms without the bytes: it cannot answer its possession challenge
     env.confirm_shard(&lazy, &address, 0).unwrap();
     env.warp(EPOCH);
 
     let reporter = env.user();
-    env.challenge_ready(&reporter, &address, 0);
+    let target = env.fetch::<Blob>(&address).slots[0].challenge_slot;
     assert_error(
         env.fail(&reporter, &address, 0),
         soladb_error(SolaDbError::ChallengeStillOpen),
     );
-    env.warp_slots(CHALLENGE_WINDOW);
+    env.warp_slots(CHALLENGE_DELAY_SLOTS + CHALLENGE_WINDOW + 1);
+    env.set_slot_hashes(&[target - 1, target, target + 1]);
     assert_error(
         env.prove(&lazy, &address, 0, blob.answer(0, 0)),
         soladb_error(SolaDbError::ChallengeExpired),
@@ -1917,8 +1956,9 @@ fn an_unanswered_challenge_frees_the_slot_and_pays_a_bounty() {
     assert_eq!(state.held, 0);
     assert_eq!(state.state, BlobState::Hot);
     assert!(state.needs_holders);
-    // another node rebuilds the shard and takes the slot
+    // another node rebuilds the shard and takes the slot (and proves it holds it)
     env.confirm_shard(&fresh, &address, 0).unwrap();
+    env.answer_open(&fresh, &address, 0, &blob);
     assert_eq!(env.fetch::<Blob>(&address).state, BlobState::Cool);
 }
 
@@ -1942,6 +1982,7 @@ fn challenges_respect_the_cooldown() {
     let address = env.open_blob(&owner, &blob, 1, 2);
     let node = env.replicator();
     env.confirm_shard(&node, &address, 0).unwrap();
+    env.answer_open(&node, &address, 0, &blob);
     assert_error(
         env.challenge(&owner, &address, 0),
         soladb_error(SolaDbError::ChallengeCooldown),
@@ -1964,6 +2005,7 @@ fn rewards_stop_at_expiry_and_the_owner_recovers_the_rest() {
     let address = env.open_blob(&owner, &blob, 1, 2);
     let node = env.replicator();
     env.confirm_shard(&node, &address, 0).unwrap();
+    env.answer_open(&node, &address, 0, &blob);
 
     // a proof after expiry (inside the grace epoch) unlocks everything up to expiry
     env.warp(2 * EPOCH + EPOCH / 2);
@@ -2076,4 +2118,105 @@ fn merkle_helpers_match_the_spec() {
     for (i, l) in leaves.iter().enumerate() {
         assert_eq!(fold_proof(*l, i as u64, &proof_of(&leaves, i)), root);
     }
+}
+
+#[test]
+fn a_skipped_challenge_slot_uses_the_next_produced_slot() {
+    let mut env = Env::new();
+    let owner = env.registered_user();
+    let blob = TestBlob::new(2, 8, 12);
+    let address = env.open_blob(&owner, &blob, 1, 3);
+    let node = env.replicator();
+    env.confirm_shard(&node, &address, 0).unwrap();
+    let state: Blob = env.fetch(&address);
+    let target = state.slots[0].challenge_slot;
+
+    // the target slot was skipped and nothing after it is recorded yet: not answerable yet
+    env.warp_slots(CHALLENGE_DELAY_SLOTS + 1);
+    env.set_slot_hashes(&[target - 2, target - 1]);
+    assert_error(
+        env.prove(&node, &address, 0, blob.answer(0, 0)),
+        soladb_error(SolaDbError::ChallengeNotReady),
+    );
+
+    // the first produced slot after it decides the segment, for everyone
+    env.warp_slots(3);
+    let hashes = env.set_slot_hashes(&[target - 1, target + 2, target + 4]);
+    let segment = challenged_segment(&hashes[1], &address, 0, state.shard_segments());
+    env.prove(&node, &address, 0, blob.answer(0, segment))
+        .unwrap();
+    assert_eq!(env.fetch::<Blob>(&address).slots[0].challenge_slot, 0);
+}
+
+#[test]
+fn a_challenge_window_without_blocks_is_voided_not_slashed() {
+    let mut env = Env::new();
+    let owner = env.registered_user();
+    let blob = TestBlob::new(2, 1, 13);
+    let address = env.open_blob(&owner, &blob, 1, 3);
+    let node = env.replicator();
+    env.confirm_shard(&node, &address, 0).unwrap();
+    let state: Blob = env.fetch(&address);
+    let (target, deadline) = (
+        state.slots[0].challenge_slot,
+        state.slots[0].challenge_deadline,
+    );
+    env.warp_slots(CHALLENGE_DELAY_SLOTS + CHALLENGE_WINDOW + 5);
+
+    // SlotHashes reaches back before the target, and no block landed in [target, deadline]
+    env.set_slot_hashes(&[target - 3, deadline + 2]);
+    let reporter = env.user();
+    let before = env.balance(&reporter.pubkey());
+    env.fail(&reporter, &address, 0).unwrap();
+    let after: Blob = env.fetch(&address);
+    assert_eq!(
+        after.slots[0].holder,
+        node.pubkey(),
+        "the holder keeps its slot"
+    );
+    assert_eq!(after.slots[0].challenge_slot, 0);
+    assert_eq!(after.held, 1);
+    assert_eq!(env.balance(&reporter.pubkey()), before - 5_000, "no bounty");
+
+    // a window that had blocks the holder ignored is still slashed
+    env.challenge(&owner, &address, 0).unwrap();
+    let target = env.fetch::<Blob>(&address).slots[0].challenge_slot;
+    env.warp_slots(CHALLENGE_DELAY_SLOTS + CHALLENGE_WINDOW + 5);
+    env.set_slot_hashes(&[target - 1, target, target + 1]);
+    env.fail(&reporter, &address, 0).unwrap();
+    assert!(env.fetch::<Blob>(&address).slots[0].is_vacant());
+}
+
+#[test]
+fn a_node_cannot_squat_a_slot_without_the_bytes() {
+    let mut env = Env::new();
+    let owner = env.registered_user();
+    let blob = TestBlob::new(3, 4, 14);
+    let address = env.open_blob(&owner, &blob, 2, 3);
+    let (squatter, honest) = (env.replicator(), env.replicator());
+
+    // the squatter grabs slot 2 first, but has no bytes to answer with
+    env.confirm_shard(&squatter, &address, 2).unwrap();
+    assert_error(
+        env.confirm_shard(&honest, &address, 2),
+        soladb_error(SolaDbError::SlotOccupied),
+    );
+    let target = env.fetch::<Blob>(&address).slots[2].challenge_slot;
+    env.warp_slots(CHALLENGE_DELAY_SLOTS + 1);
+    env.set_slot_hashes(&[target - 1, target, target + 1]);
+    let wrong = blob.answer(1, 0); // any data it might have is not shard 2
+    assert_error(
+        env.prove(&squatter, &address, 2, wrong),
+        soladb_error(SolaDbError::InvalidProof),
+    );
+
+    // after the window anyone frees the slot, and the honest node takes it
+    env.warp_slots(CHALLENGE_WINDOW);
+    let reporter = env.user();
+    env.fail(&reporter, &address, 2).unwrap();
+    env.confirm_shard(&honest, &address, 2).unwrap();
+    env.answer_open(&honest, &address, 2, &blob);
+    let state: Blob = env.fetch(&address);
+    assert_eq!(state.slots[2].holder, honest.pubkey());
+    assert_eq!(state.slots[2].challenge_slot, 0);
 }

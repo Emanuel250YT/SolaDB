@@ -65,7 +65,7 @@ soladb program ── Chunk PDA: sha256, (segment bitmap), escrowed rewards
 Specified in [docs/blob-protocol.md](docs/blob-protocol.md). A blob turns a payload into `k + m` shards with Reed-Solomon over GF(2^8): any `k` shards rebuild it, so it survives `m` lost nodes while storing only `(k + m) / k` times its size. The SDK picks the code from the nodes available (10+4 with 14 nodes, 4+2 with 6, 2+1 with 3).
 
 - **One account per blob.** `open_blob` stores a single Merkle root over the shard roots (leaves = 1 KiB segments). 1 TB is about 100 accounts, not ~119 000 chunk accounts and ~20 000 wallet signatures.
-- **Shards go straight to the nodes**, one per node, in resumable 8 MiB `PUT`s. Each node checks its shard against the root the uploader paid for, then takes its slot with `confirm_shard`. Readers fetch fragments with their Merkle proof (`X-SolaDB-Proof`), verify each one and decode from any `k` shards.
+- **Shards go straight to the nodes**, one per node, in resumable 8 MiB `PUT`s. Each node checks its shard against the root the uploader paid for, then takes its slot with `confirm_shard`, which opens a challenge right away: a node that took a slot without the bytes loses it within the challenge window. Readers fetch fragments with their Merkle proof (`X-SolaDB-Proof`), verify each one and decode from any `k` shards.
 - **Storage is prepaid per epoch** (`price_per_mib_epoch`, default 200 lamports per MiB of shard per 30 days) and escrowed in the blob. A holder's rewards unlock only up to its last **storage proof**: anyone can `create_challenge`, the segment to answer is picked by the hash of a slot that does not exist yet (SlotHashes sysvar), and the holder must send that 1 KiB segment with its Merkle path in `prove_shard` within `challenge_window_slots`. Nodes challenge themselves before claiming.
 - **Lost shards are repaired.** A holder that lets a challenge expire loses its slot and unclaimed rewards (`fail_challenge`, with a bounty for the reporter); any other node then rebuilds that shard from `k` others, fragment by fragment, and takes the slot.
 - **Bundles** pack many small files into one blob and one record (`uploadFiles`), so thousands of small files do not mean thousands of accounts.
@@ -172,7 +172,7 @@ Prerequisites: Rust, [Agave CLI](https://docs.anza.xyz/cli/install) ≥ 4.3 (v1 
 ```sh
 npm install                 # sdk + app workspaces (+ tsx for scripts)
 anchor build                # program → target/deploy/soladb.so, target/idl/soladb.json
-cargo test -p soladb        # 40 program tests on LiteSVM
+cargo test -p soladb        # 43 program tests on LiteSVM
 npm run build:sdk
 ```
 
@@ -181,7 +181,7 @@ npm run build:sdk
 ```sh
 npm run localnet            # terminal 1: solana-test-validator with the program; admin = .localnet/admin.json
 npm run init:localnet       # config + pricing → deployments/solana-localnet.json
-npm run test:sdk            # 42 SDK unit tests + 16 end-to-end tests against the validator (chunks, blobs, proofs)
+npm run test:sdk            # 43 SDK unit tests + 16 end-to-end tests against the validator (chunks, blobs, proofs)
 npm run measure-costs       # compute units and cost per file size
 ```
 
@@ -199,18 +199,18 @@ npm run fund-replicator:devnet
 
 ### Run a replicator node
 
-With Docker: the node stores chunks and shards in MinIO (S3) and metadata in Postgres; Oracle is still available with `--profile oracle`.
+With Docker: the node stores chunks and shards in SeaweedFS (an S3-compatible server) and metadata in Postgres; Oracle is still available with `--profile oracle`.
 
 ```sh
 cp soladb-node/.env.example soladb-node/.env   # SOLANA_RPC_URL, NODE_ENDPOINT, …
-docker compose up -d --build                     # node + minio + postgres (dev passwords: override them)
+docker compose up -d --build                     # node + SeaweedFS (S3) + postgres (dev passwords: override them)
 ```
 
 Storage backends (`soladb-node/.env.example` lists every variable):
 
 | What | Options |
 | --- | --- |
-| Chunks (`CHUNK_STORE`) | `s3` (AWS S3, Cloudflare R2, Backblaze B2, MinIO: `S3_BUCKET`, `S3_ENDPOINT`, …), `rocksdb`, `fs` |
+| Chunks (`CHUNK_STORE`) | `s3` (AWS S3, Cloudflare R2, Backblaze B2, SeaweedFS, MinIO: `S3_BUCKET`, `S3_ENDPOINT`, …), `rocksdb`, `fs` |
 | Blob shards (`BLOB_STORE`) | `s3` (multipart uploads, range reads; staging on local disk) or `fs`; RocksDB is not meant for GiB objects |
 | Metadata (`METADATA_STORE`) | `postgres` (`DATABASE_URL`, `PG_SCHEMA`), `oracle`, `file` |
 
@@ -304,7 +304,7 @@ soladb-node/                      NestJS replicator node: replicator/ (chunks), 
 scripts/                          localnet, deploy, init, fund-replicator, e2e, measure-costs, export-idl
 deployments/                      deployed addresses, e2e results, measured costs
 docs/blob-protocol.md             the blob format and protocol (normative)
-docker-compose.yml                replicator + MinIO + Postgres (Oracle profile)
+docker-compose.yml                replicator + SeaweedFS (S3) + Postgres (Oracle profile)
 ```
 
 After changing the program, run `anchor build` and `npm run export-idl`.

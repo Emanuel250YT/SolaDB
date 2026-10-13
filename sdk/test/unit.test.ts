@@ -28,6 +28,7 @@ import {
   SOLADB_ERRORS,
   createSolaDBRpc,
   ChunkAccount,
+  challengeSlotHash,
   DIRECT_ABORT_DELAY,
   gunzip,
   isClosable,
@@ -236,6 +237,22 @@ test('gzip is only kept when it saves at least 10 %', async () => {
   const noise = crypto.getRandomValues(new Uint8Array(4_096));
   assert.equal(await maybeCompress(noise), null, 'incompressible data is sent as it is');
   assert.equal(await maybeCompress(new Uint8Array(100)), null, 'tiny files are not worth it');
+});
+
+test('a challenge is answered with the first produced slot at or after it', () => {
+  // SlotHashes: u64 count, then (u64 slot, hash) newest first; slot 102 was skipped
+  const entries: [bigint, number][] = [[105n, 5], [103n, 3], [101n, 1], [100n, 0]];
+  const data = new Uint8Array(8 + entries.length * 40);
+  const view = new DataView(data.buffer);
+  view.setBigUint64(0, BigInt(entries.length), true);
+  entries.forEach(([slot, fill], i) => {
+    view.setBigUint64(8 + i * 40, slot, true);
+    data.fill(fill, 16 + i * 40, 48 + i * 40);
+  });
+  assert.equal(challengeSlotHash(data, 101n)![0], 1);
+  assert.equal(challengeSlotHash(data, 102n)![0], 3, 'skipped slot → the next produced one');
+  assert.equal(challengeSlotHash(data, 105n)![0], 5);
+  assert.equal(challengeSlotHash(data, 106n), null, 'nothing produced yet');
 });
 
 test('direct chunks: closable after the abort delay without confirmations', () => {

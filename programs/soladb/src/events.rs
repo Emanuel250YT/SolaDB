@@ -154,6 +154,14 @@ pub struct ShardLost {
     pub bounty: u64,
 }
 
+/// No block was produced inside the challenge window: nobody could answer
+#[event]
+pub struct ChallengeVoided {
+    pub blob: Pubkey,
+    pub index: u8,
+    pub holder: Pubkey,
+}
+
 #[event]
 pub struct ShardRewardsClaimed {
     pub blob: Pubkey,

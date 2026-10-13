@@ -364,9 +364,15 @@ export function soladbInstructions(program: Address = PROGRAM_ADDRESS) {
       );
     },
 
+    /** Takes the slot and opens a possession challenge the holder must answer */
     async confirmShard(authority: TransactionSigner, blob: Address, index: number) {
       return ix(
-        [signer(authority, false), writable(await pdas.replicator(authority.address, program)), writable(blob)],
+        [
+          signer(authority, false),
+          writable(await pdas.replicator(authority.address, program)),
+          writable(blob),
+          readonly(await pdas.config(program)),
+        ],
         encodeInstructionData('confirmShard', { index }),
       );
     },
@@ -387,7 +393,7 @@ export function soladbInstructions(program: Address = PROGRAM_ADDRESS) {
 
     async failChallenge(reporter: TransactionSigner, blob: Address, index: number) {
       return ix(
-        [signer(reporter), writable(blob), readonly(await pdas.config(program))],
+        [signer(reporter), writable(blob), readonly(await pdas.config(program)), readonly(SLOT_HASHES_ADDRESS)],
         encodeInstructionData('failChallenge', { index }),
       );
     },
@@ -517,6 +523,22 @@ export function blobAccountSize(totalShards: number): number {
 export function rewardBetween(blob: Pick<BlobAccount, 'rewardPerShardEpoch'>, epochSeconds: bigint, from: bigint, to: bigint): bigint {
   if (to <= from || epochSeconds <= 0n) return 0n;
   return (blob.rewardPerShardEpoch * (to - from)) / epochSeconds;
+}
+
+/**
+ * The hash a challenge's randomness comes from: the first produced slot at or
+ * after `challengeSlot` (a skipped slot has no entry), from the raw SlotHashes
+ * sysvar data (`u64 len`, then `(u64 slot, [u8; 32] hash)` newest first).
+ */
+export function challengeSlotHash(slotHashes: Uint8Array, challengeSlot: bigint): Uint8Array | null {
+  const view = new DataView(slotHashes.buffer, slotHashes.byteOffset, slotHashes.byteLength);
+  const count = Number(view.getBigUint64(0, true));
+  let found: Uint8Array | null = null;
+  for (let i = 0; i < count && 8 + i * 40 + 40 <= slotHashes.length; i++) {
+    if (view.getBigUint64(8 + i * 40, true) < challengeSlot) break;
+    found = slotHashes.slice(16 + i * 40, 48 + i * 40);
+  }
+  return found;
 }
 
 /** The segment a challenge asks for: sha256(slotHash ‖ blob ‖ [index]) as u64 LE mod segments */

@@ -136,6 +136,8 @@ export default () => {
       claimMinLamports: lamports('BLOB_CLAIM_MIN_LAMPORTS', 50_000n),
       // Memory for shard segment hashes (proofs), least recently used evicted
       leafCacheBytes: int('BLOB_LEAF_CACHE_BYTES', 256 * 1024 * 1024),
+      // Largest shard this node accepts or rebuilds (disk quota per blob)
+      maxShardBytes: int('BLOB_MAX_SHARD_BYTES', 2 * 1024 * 1024 * 1024),
     },
 
     s3: {

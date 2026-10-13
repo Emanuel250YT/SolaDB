@@ -20,6 +20,7 @@ import {
   blobProof,
   blobRoot,
   challengedSegment,
+  challengeSlotHash,
   ConfigAccount,
   fetchAccount,
   fragmentProof,
@@ -130,6 +131,8 @@ class FakeNode {
       if (toHex(shardRoot(data)) !== toHex(state.roots[index])) return json(400, { error: 'shard root' });
       this.shards.set(key, { data, roots: state.roots, fragmentSize: state.fragmentSize, index });
       const signature = await sender.send({ feePayer: this.signer, instructions: [await ix.confirmShard(this.signer, blob, index)] });
+      // taking the slot opened a possession challenge: answer it like a node's maintenance loop
+      await this.prove(blob);
       return json(201, { stored: true, confirmed: true, signature });
     }
     const held = [...this.shards.entries()].find(([k]) => k.startsWith(`${blob}/`));
@@ -155,12 +158,8 @@ class FakeNode {
     const slot = account.slots[index];
     while ((await rpc.getSlot({ commitment: 'confirmed' }).send()) <= slot.challengeSlot) await sleep(200);
     const info = await rpc.getAccountInfo(SLOT_HASHES_ADDRESS, { encoding: 'base64', commitment: 'confirmed' }).send();
-    const data = Buffer.from(info.value!.data[0], 'base64');
-    let hash: Uint8Array | null = null;
-    for (let i = 0; i < Number(data.readBigUInt64LE(0)); i++) {
-      if (data.readBigUInt64LE(8 + i * 40) === slot.challengeSlot) hash = new Uint8Array(data.subarray(16 + i * 40, 48 + i * 40));
-    }
-    assert.ok(hash, 'challenge slot is in SlotHashes');
+    const hash = challengeSlotHash(new Uint8Array(Buffer.from(info.value!.data[0], 'base64')), slot.challengeSlot);
+    assert.ok(hash, 'a slot at or after the challenge slot is in SlotHashes');
     const shard = this.shards.get(`${blob}/${index}`)!;
     const segment = Number(challengedSegment(hash!, blob, index, account.shardSize / 1024n));
     const leaves = shardLeafHashes(shard.data);

@@ -28,7 +28,8 @@ import {
 import { BundleEntry, BundleFile, chooseLayout, decodeBundle, decodeStripe, encodeBlobs, encodeBundle, stripePlainLengths } from './blob-layout';
 import { BLOB_FILE_SCHEMA, BlobManifest, decodeBlobManifest, encodeBlobManifest, isBlobManifest } from './blob-manifest';
 import { gunzip, maybeCompress } from './compression';
-import { blobRoot, verifyFragment } from './merkle';
+import { blobRoot, depth, verifyFragment } from './merkle';
+import { fromHex } from './manifest';
 import { readChunkFromLedger } from './ledger';
 import { createSolaDBRpc } from './rpc';
 import { decodeIndex, decodeManifest, encodeIndex, encodeManifest, FILE_SCHEMA, FileManifest, toHex } from './manifest';
@@ -1168,7 +1169,7 @@ export class SolaDBClient {
           for (const source of sources) {
             if (have >= k) break;
             for (const url of source.urls) {
-              const fragment = await this.fetchFragment(url, address, source.index, stripe, roots[source.index]);
+              const fragment = await this.fetchFragment(url, address, source.index, stripe, roots[source.index], fragmentSize, ref.stripes);
               if (fragment) {
                 fragments[source.index] = fragment;
                 have++;
@@ -1214,7 +1215,9 @@ export class SolaDBClient {
       try {
         const response = await fetch(`${url}/blob/${blob}/roots`, { signal: AbortSignal.timeout(this.nodeTimeoutMs) });
         if (!response.ok) continue;
-        const roots = ((await response.json()) as string[]).map((r) => Uint8Array.from(r.match(/../g)!.map((h) => parseInt(h, 16))));
+        const body = (await response.json()) as unknown;
+        if (!Array.isArray(body) || body.some((r) => typeof r !== 'string' || !/^[0-9a-f]{64}$/i.test(r))) continue;
+        const roots = (body as string[]).map(fromHex);
         if (toHex(blobRoot(roots)) === toHex(root)) return roots;
       } catch {
         // next node
@@ -1223,15 +1226,28 @@ export class SolaDBClient {
     throw new Error(`No node served shard roots matching blob ${blob}`);
   }
 
-  private async fetchFragment(url: string, blob: Address, index: number, stripe: number, shardRoot: Uint8Array): Promise<Uint8Array | null> {
+  /**
+   * One fragment, accepted only if it is exactly `fragmentSize` bytes and its
+   * proof has the depth of the blob's stripe tree: a node cannot pass off
+   * several fragments (or a subtree) with a shorter proof
+   */
+  private async fetchFragment(
+    url: string,
+    blob: Address,
+    index: number,
+    stripe: number,
+    shardRoot: Uint8Array,
+    fragmentSize: number,
+    stripes: number,
+  ): Promise<Uint8Array | null> {
     try {
       const response = await fetch(`${url}/blob/${blob}/shard/${index}/fragment/${stripe}`, { signal: AbortSignal.timeout(this.nodeTimeoutMs) });
       if (!response.ok) return null;
-      const proof = (response.headers.get('x-soladb-proof') ?? '')
-        .split(',')
-        .filter(Boolean)
-        .map((h) => Uint8Array.from(h.match(/../g)!.map((x) => parseInt(x, 16))));
+      const header = (response.headers.get('x-soladb-proof') ?? '').split(',').filter(Boolean);
+      if (header.length !== depth(stripes) || header.some((h) => !/^[0-9a-f]{64}$/i.test(h))) return null;
+      const proof = header.map(fromHex);
       const fragment = new Uint8Array(await response.arrayBuffer());
+      if (fragment.length !== fragmentSize) return null;
       return verifyFragment(fragment, stripe, proof, shardRoot) ? fragment : null;
     } catch {
       return null;

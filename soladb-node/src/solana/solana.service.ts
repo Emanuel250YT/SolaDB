@@ -25,6 +25,7 @@ import {
   pdas,
   readSegments,
   ReplicatorAccount,
+  challengeSlotHash,
   SLOT_HASHES_ADDRESS,
   TransactionSender,
   TxOptions,
@@ -356,20 +357,17 @@ export class SolanaService implements OnModuleInit {
     });
   }
 
-  /** Hash of `slot` from the SlotHashes sysvar, or null once it aged out (512 slots) */
+  /**
+   * The hash a challenge on `slot` is answered with: that of the first
+   * produced slot at or after it (a skipped slot has no entry), or null when
+   * none is recorded yet
+   */
   async getSlotHash(slot: bigint): Promise<Uint8Array | null> {
     const { value } = await this.rpc
       .getAccountInfo(SLOT_HASHES_ADDRESS, { encoding: 'base64', commitment: 'confirmed' })
       .send();
     if (!value) return null;
-    const data = Buffer.from(value.data[0], 'base64');
-    const count = Number(data.readBigUInt64LE(0));
-    for (let i = 0; i < count; i++) {
-      const at = 8 + i * 40;
-      if (at + 40 > data.length) break;
-      if (data.readBigUInt64LE(at) === slot) return new Uint8Array(data.subarray(at + 8, at + 40));
-    }
-    return null;
+    return challengeSlotHash(new Uint8Array(Buffer.from(value.data[0], 'base64')), slot);
   }
 
   async currentSlot(): Promise<bigint> {

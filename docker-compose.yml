@@ -1,5 +1,5 @@
 # One replicator node + its storage:
-#   • MinIO    (S3 API)  chunk bytes and blob shards   (CHUNK_STORE=s3, BLOB_STORE=s3)
+#   • SeaweedFS (S3 API) chunk bytes and blob shards   (CHUNK_STORE=s3, BLOB_STORE=s3)
 #   • Postgres           chunk / blob-shard metadata   (METADATA_STORE=postgres)
 #   • Oracle   (optional, profile "oracle")            the previous metadata store
 #
@@ -9,9 +9,10 @@
 # Oracle instead of Postgres:
 #   METADATA_STORE=oracle ORACLE_SYS_PASSWORD=... ORACLE_PASSWORD=... \
 #     docker compose --profile oracle up -d --build
-# RocksDB / local files instead of MinIO: CHUNK_STORE=rocksdb BLOB_STORE=fs
-# A managed object store (R2, B2, S3) or database: override S3_* / DATABASE_URL
-# under soladb-node.environment (or drop the minio / postgres services).
+# RocksDB / local files instead of SeaweedFS: CHUNK_STORE=rocksdb BLOB_STORE=fs
+# A managed object store (R2, B2, S3, MinIO) or database: override S3_* /
+# DATABASE_URL under soladb-node.environment (or drop the s3 / postgres services).
+# (MinIO stopped publishing its community images in 2025, hence SeaweedFS.)
 #
 # Every password below defaults to a development placeholder: set real ones
 # (shell environment or a .env file next to this compose file) before
@@ -32,39 +33,27 @@ services:
       - postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
 
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address :9001
+  # S3-compatible object store; one access key, written to an identities file at start
+  s3:
+    image: chrislusf/seaweedfs:4.48
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-soladb-dev}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-soladb-dev-password}
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 5s
-      timeout: 5s
-      retries: 30
-    ports:
-      # web console, local machine only
-      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
-    volumes:
-      - minio-data:/data
-    restart: unless-stopped
-
-  # One-shot: creates the bucket (idempotent), then exits
-  minio-init:
-    image: minio/mc:latest
-    depends_on:
-      minio:
-        condition: service_healthy
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-soladb-dev}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-soladb-dev-password}
-      S3_BUCKET: ${S3_BUCKET:-soladb}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-soladb-dev}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-soladb-dev-password}
     entrypoint:
       - /bin/sh
       - -c
-      - mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" && mc mb --ignore-existing "local/$$S3_BUCKET"
-    restart: "no"
+      - >-
+        printf '{"identities":[{"name":"soladb","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}'
+        "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY" > /tmp/s3.json &&
+        exec weed server -dir=/data -s3 -s3.port=8333 -s3.config=/tmp/s3.json
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 8333"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - s3-data:/data
+    restart: unless-stopped
 
   oracle:
     profiles: ["oracle"]
@@ -90,13 +79,14 @@ services:
       CHUNK_STORE: ${CHUNK_STORE:-s3}
       METADATA_STORE: ${METADATA_STORE:-postgres}
       BLOB_STORE: ${BLOB_STORE:-s3}
-      # MinIO (path-style URLs); the node checks the bucket at boot
-      S3_ENDPOINT: http://minio:9000
+      # SeaweedFS (path-style URLs); the node creates the bucket at boot if missing
+      S3_ENDPOINT: http://s3:8333
       S3_REGION: us-east-1
       S3_FORCE_PATH_STYLE: "true"
       S3_BUCKET: ${S3_BUCKET:-soladb}
-      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-soladb-dev}
-      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-soladb-dev-password}
+      S3_CREATE_BUCKET: "true"
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-soladb-dev}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-soladb-dev-password}
       DATABASE_URL: postgres://soladb:${POSTGRES_PASSWORD:-soladb-dev-password}@postgres:5432/soladb
       # Used with METADATA_STORE=oracle (profile "oracle")
       ORACLE_USER: soladb
@@ -107,8 +97,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      minio-init:
-        condition: service_completed_successfully
+      s3:
+        condition: service_healthy
       oracle:
         condition: service_healthy
         required: false # only waited for with --profile oracle
@@ -122,6 +112,6 @@ services:
 
 volumes:
   postgres-data:
-  minio-data:
+  s3-data:
   oracle-data:
   node-data:

@@ -136,21 +136,29 @@ rest is escrowed in the blob account; `reward_per_shard_epoch =
   now + epochs · epoch_seconds`.
 - `confirm_shard(index)` — an active replicator takes vacant slot `index`
   (one slot per replicator per blob): `proven_at = claimed_until = now`.
-  `held ≥ k` → Cool; `held == n` → `needs_holders = false`.
+  `held ≥ k` → Cool; `held == n` → `needs_holders = false`. Taking the slot
+  **opens a challenge** (as `create_challenge` would): a node that confirms
+  without the bytes cannot answer and loses the slot within the window, so
+  slots cannot be squatted.
 - `create_challenge(index)` — anyone; slot held, no open challenge, cooldown
   elapsed. `challenge_slot = current slot + CHALLENGE_DELAY_SLOTS`,
   `challenge_deadline = challenge_slot + challenge_window_slots`.
 - `prove_shard(index, segment[1024], shard_proof, top_proof)` — anyone (only a
   holder of the data can), once `challenge_slot` has passed and before the
-  deadline. Segment index = `u64_le(sha256(slot_hash(challenge_slot) ‖ blob ‖
-  [index])[0..8]) mod (shard_size / 1024)`. Verifies `leafHash(segment)` →
+  deadline. Segment index = `u64_le(sha256(H ‖ blob ‖ [index])[0..8]) mod
+  (shard_size / 1024)`, where `H` is the hash of the **first produced slot at
+  or after `challenge_slot`** (a leader may skip a slot, which then has no
+  SlotHashes entry; the next produced one is the same for everyone). Verifies `leafHash(segment)` →
   `r_index` (`shard_proof`, depth `depth(shard_size/1024)`) → `R`
   (`top_proof`, depth `depth(n)`). Success: `proven_at = now`, challenge cleared.
   Needs the SlotHashes sysvar account.
 - `fail_challenge(index)` — anyone, after the deadline: the slot is vacated, its
   unclaimed rewards are forfeited (`challenger_bounty_bps` of them to the
   caller, the rest stays in escrow), `needs_holders = true`, `held −= 1`
-  (below `k` → Hot).
+  (below `k` → Hot). Needs the SlotHashes sysvar: if it still reaches back to
+  `challenge_slot` and shows **no block produced in `[challenge_slot,
+  deadline]`**, nobody could have answered, so the challenge is voided
+  instead (no penalty, no bounty).
 - `claim_shard_rewards(index)` — the holder is paid
   `reward_per_shard_epoch · (min(proven_at, expires_at) − claimed_until) / epoch_seconds`;
   `claimed_until` moves forward. Rewards unlock only up to the last proof.

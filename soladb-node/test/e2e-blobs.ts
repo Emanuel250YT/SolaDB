@@ -271,7 +271,10 @@ async function main(): Promise<void> {
 
     // 4. The stopped node never answers: its slot is reported and reopens
     const lostIndex = (await blobAccount(blob)).slots.findIndex((s) => s.holder === lost.signer.address);
-    await sender.send({ feePayer: uploader, instructions: [await ix.createChallenge(uploader, blob, lostIndex)] });
+    // it may not even have answered the possession challenge its confirmation opened
+    if ((await blobAccount(blob)).slots[lostIndex].challengeSlot === 0n) {
+      await sender.send({ feePayer: uploader, instructions: [await ix.createChallenge(uploader, blob, lostIndex)] });
+    }
     const challenged = await blobAccount(blob);
     const deadline = challenged.slots[lostIndex].challengeDeadline;
     while ((await rpc.getSlot({ commitment: 'confirmed' }).send()) <= deadline) await sleep(1_000);
