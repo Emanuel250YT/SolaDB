@@ -1,7 +1,11 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { BLOB_STORE, BlobStore } from './blob-store';
 import { CHUNK_STORE, ChunkStore } from './chunk-store';
 import {
+  BlobShardQuery,
+  BlobShardRecord,
+  BlobShardUpdate,
   ChunkQuery,
   ChunkRecord,
   ChunkStateUpdate,
@@ -13,11 +17,13 @@ import {
  * StorageService
  *
  * Unified facade that routes:
- *   • binary chunk data     → ChunkStore    (RocksDB, or files with CHUNK_STORE=fs)
- *   • structured metadata   → MetadataStore (Oracle, or JSON with METADATA_STORE=file)
+ *   • binary chunk data     → ChunkStore    (RocksDB; files with CHUNK_STORE=fs; S3 with CHUNK_STORE=s3)
+ *   • blob shard bytes      → BlobStore     (files with BLOB_STORE=fs; S3 with BLOB_STORE=s3)
+ *   • structured metadata   → MetadataStore (Oracle; Postgres with METADATA_STORE=postgres;
+ *                                            JSON with METADATA_STORE=file)
  *
  * Callers should always use this service rather than touching the stores
- * directly.
+ * directly (shard bytes go through `blobs`, whose API is already minimal).
  */
 @Injectable()
 export class StorageService {
@@ -27,6 +33,7 @@ export class StorageService {
     @Inject(CHUNK_STORE) private readonly chunks: ChunkStore,
     @Inject(METADATA_STORE) private readonly metadata: MetadataStore,
     private readonly config: ConfigService,
+    @Optional() @Inject(BLOB_STORE) private readonly blobStore?: BlobStore,
   ) { }
 
   // ── Write path ──────────────────────────────────────────────────────────────
@@ -92,11 +99,47 @@ export class StorageService {
     return this.metadata.countChunks();
   }
 
+  // ── Blobs ───────────────────────────────────────────────────────────────────
+
+  /**
+   * Shard bytes: staged appends, commit, range reads, small objects (keys:
+   * blobShardKey / blobSegmentHashesKey / blobRootsKey in blob-store.ts).
+   */
+  get blobs(): BlobStore {
+    if (!this.blobStore) throw new Error('No BlobStore configured');
+    return this.blobStore;
+  }
+
+  /** Insert, or merge into an existing record (rules on BlobShardRecord) */
+  async upsertBlobShard(shard: BlobShardRecord): Promise<void> {
+    await this.metadata.upsertBlobShard(shard);
+  }
+
+  async getBlobShard(blob: string, index: number): Promise<BlobShardRecord | null> {
+    return this.metadata.getBlobShard(blob, index);
+  }
+
+  /** Ordered by blob, then index; default 50 per page, at most 1000 */
+  async listBlobShards(query: BlobShardQuery = {}): Promise<BlobShardRecord[]> {
+    return this.metadata.listBlobShards(query);
+  }
+
+  /** Set the given fields (null clears); no-op when the shard has no record */
+  async updateBlobShard(blob: string, index: number, update: BlobShardUpdate): Promise<void> {
+    await this.metadata.updateBlobShard(blob, index, update);
+  }
+
+  /** Forget a shard's record (its bytes are deleted through `blobs`) */
+  async deleteBlobShard(blob: string, index: number): Promise<void> {
+    await this.metadata.deleteBlobShard(blob, index);
+  }
+
   /** Configured drivers, for /status */
-  get drivers(): { chunkStore: string; metadataStore: string } {
+  get drivers(): { chunkStore: string; metadataStore: string; blobStore: string } {
     return {
       chunkStore: this.config.get<string>('storage.chunkStore'),
       metadataStore: this.config.get<string>('storage.metadataStore'),
+      blobStore: this.config.get<string>('storage.blobStore'),
     };
   }
 }

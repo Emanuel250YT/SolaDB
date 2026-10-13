@@ -8,6 +8,7 @@ import {
   TransactionSigner,
 } from '@solana/kit';
 import { encodeInstructionData, PROGRAM_ADDRESS } from './codec';
+import { sha256 } from './crypto';
 
 /** On-chain account layouts (camelCased from the IDL) */
 
@@ -17,20 +18,36 @@ export interface ConfigAccount {
   admin: Address;
   treasury: Address;
   baseFeePerReplica: bigint;
-  pricePerByte: bigint;
+  /** Lamports per MiB per replica, charged pro rata to the byte */
+  pricePerMib: bigint;
   protocolFeeBps: number;
   replicationThresholdPct: number;
   replicationWindow: bigint;
   bump: number;
+  /** Blob storage is prepaid per epoch of this many seconds */
+  epochSeconds: bigint;
+  /** Lamports per MiB of shard per epoch, pro rata */
+  pricePerMibEpoch: bigint;
+  /** Slots a holder has to answer a challenge after its target slot */
+  challengeWindowSlots: bigint;
+  /** Seconds between two challenges of one shard slot */
+  challengeCooldown: bigint;
+  /** Share of forfeited rewards paid to whoever reports a failed challenge */
+  challengerBountyBps: number;
 }
 
 export interface ConfigParams {
   treasury: Address;
   baseFeePerReplica: bigint;
-  pricePerByte: bigint;
+  pricePerMib: bigint;
   protocolFeeBps: number;
   replicationThresholdPct: number;
   replicationWindow: bigint;
+  epochSeconds: bigint;
+  pricePerMibEpoch: bigint;
+  challengeWindowSlots: bigint;
+  challengeCooldown: bigint;
+  challengerBountyBps: number;
 }
 
 export interface IdentityAccount {
@@ -85,6 +102,38 @@ export interface RecordAccount {
   content: Uint8Array;
 }
 
+export type BlobState = 'Hot' | 'Cool';
+
+export interface ShardSlot {
+  /** The default address (11111111111111111111111111111111) = vacant */
+  holder: Address;
+  provenAt: bigint;
+  claimedUntil: bigint;
+  lastChallengeAt: bigint;
+  /** 0 = no open challenge */
+  challengeSlot: bigint;
+  challengeDeadline: bigint;
+}
+
+/** Erasure-coded payload (docs/blob-protocol.md) */
+export interface BlobAccount {
+  owner: Address;
+  root: Uint8Array;
+  state: BlobState;
+  needsHolders: boolean;
+  bump: number;
+  dataShards: number;
+  totalShards: number;
+  held: number;
+  shardSize: bigint;
+  payloadSize: bigint;
+  epochs: number;
+  rewardPerShardEpoch: bigint;
+  openedAt: bigint;
+  expiresAt: bigint;
+  slots: ShardSlot[];
+}
+
 export interface GrantAccount {
   record: Address;
   owner: Address;
@@ -101,7 +150,14 @@ export const OFFSETS = {
   record: { owner: 8 },
   grant: { record: 8, owner: 40, viewer: 72 },
   replicator: { authority: 8, active: 40 },
+  blob: { owner: 8, state: 72, needsHolders: 73 },
 } as const;
+
+/** A vacant shard slot's holder */
+export const VACANT = '11111111111111111111111111111111' as Address;
+export const SLOT_HASHES_ADDRESS = 'SysvarS1otHashes111111111111111111111111111' as Address;
+/** Mirrors CHALLENGE_DELAY_SLOTS */
+export const CHALLENGE_DELAY_SLOTS = 2n;
 
 export const SYSTEM_PROGRAM_ADDRESS = '11111111111111111111111111111111' as Address;
 
@@ -126,6 +182,8 @@ export const pdas = {
     pda([text('record'), addr(owner) as Uint8Array, getU64Encoder().encode(nonce) as Uint8Array], program),
   grant: (record: Address, viewer: Address, program = PROGRAM_ADDRESS) =>
     pda([text('grant'), addr(record) as Uint8Array, addr(viewer) as Uint8Array], program),
+  blob: (owner: Address, root: Uint8Array, program = PROGRAM_ADDRESS) =>
+    pda([text('blob'), addr(owner) as Uint8Array, root], program),
   programData: (program = PROGRAM_ADDRESS) =>
     pda([addr(program) as Uint8Array], 'BPFLoaderUpgradeab1e11111111111111111111111' as Address),
 };
@@ -146,9 +204,39 @@ function instruction(accounts: Meta[], data: Uint8Array, programAddress: Address
   return { programAddress, accounts, data } as Instruction;
 }
 
+/** Seconds after which an unconfirmed direct chunk can be closed (mirrors DIRECT_ABORT_DELAY) */
+export const DIRECT_ABORT_DELAY = 600n;
+
+/** Largest direct chunk (mirrors MAX_DIRECT_CHUNK_SIZE) */
+export const MAX_DIRECT_CHUNK_SIZE = 16 * 1024 * 1024;
+
+/** A direct chunk's bytes go straight to replicators, never to the ledger */
+export const isDirect = (chunk: Pick<ChunkAccount, 'segmentSize'>) => chunk.segmentSize === 0;
+
+/** The owner may close this chunk now (mirrors close_chunk) */
+export function isClosable(chunk: ChunkAccount, now: bigint = BigInt(Math.floor(Date.now() / 1000))): boolean {
+  return (
+    chunk.state === 'Pending' ||
+    (isDirect(chunk) && chunk.confirmedReplicas === 0 && now >= chunk.openedAt + DIRECT_ABORT_DELAY) ||
+    chunk.confirmedReplicas === chunk.requiredReplicas ||
+    now >= chunk.reclaimableAt
+  );
+}
+
+export interface OpenBlobArgs {
+  root: Uint8Array;
+  dataShards: number;
+  totalShards: number;
+  shardSize: bigint;
+  payloadSize: bigint;
+  epochs: number;
+  maxFee: bigint;
+}
+
 export interface OpenChunkArgs {
   contentHash: Uint8Array;
   size: number;
+  /** Bytes per write_segment; 0 = direct chunk (sent straight to replicators) */
   segmentSize: number;
   replicas: number;
   writer: Address;
@@ -238,13 +326,15 @@ export function soladbInstructions(program: Address = PROGRAM_ADDRESS) {
       return ix([signer(writer, false), writable(chunk)], encodeInstructionData('writeSegment', { index, data }));
     },
 
-    async confirmReplication(authority: TransactionSigner, chunk: Address) {
+    /** `owner` = the chunk's owner: the last confirmation refunds the chunk's rent to it */
+    async confirmReplication(authority: TransactionSigner, chunk: Address, owner: Address) {
       return ix(
         [
           signer(authority),
           writable(await pdas.replicator(authority.address, program)),
           writable(chunk),
           readonly(await pdas.config(program)),
+          writable(owner),
         ],
         encodeInstructionData('confirmReplication'),
       );
@@ -256,6 +346,79 @@ export function soladbInstructions(program: Address = PROGRAM_ADDRESS) {
 
     closeChunk(owner: TransactionSigner, chunk: Address) {
       return ix([signer(owner), writable(chunk)], encodeInstructionData('closeChunk'));
+    },
+
+    // ── blobs ──────────────────────────────────────────────────────────────
+
+    async openBlob(owner: TransactionSigner, treasury: Address, args: OpenBlobArgs) {
+      return ix(
+        [
+          signer(owner),
+          readonly(await pdas.identity(owner.address, program)),
+          readonly(await pdas.config(program)),
+          writable(await pdas.blob(owner.address, args.root, program)),
+          writable(treasury),
+          readonly(SYSTEM_PROGRAM_ADDRESS),
+        ],
+        encodeInstructionData('openBlob', { args }),
+      );
+    },
+
+    /** Takes the slot and opens a possession challenge the holder must answer */
+    async confirmShard(authority: TransactionSigner, blob: Address, index: number) {
+      return ix(
+        [
+          signer(authority, false),
+          writable(await pdas.replicator(authority.address, program)),
+          writable(blob),
+          readonly(await pdas.config(program)),
+        ],
+        encodeInstructionData('confirmShard', { index }),
+      );
+    },
+
+    async createChallenge(challenger: TransactionSigner, blob: Address, index: number) {
+      return ix(
+        [signer(challenger, false), writable(blob), readonly(await pdas.config(program))],
+        encodeInstructionData('createChallenge', { index }),
+      );
+    },
+
+    proveShard(prover: TransactionSigner, blob: Address, index: number, segment: Uint8Array, shardProof: Uint8Array[], topProof: Uint8Array[]) {
+      return ix(
+        [signer(prover, false), writable(blob), readonly(SLOT_HASHES_ADDRESS)],
+        encodeInstructionData('proveShard', { index, segment, shardProof, topProof }),
+      );
+    },
+
+    async failChallenge(reporter: TransactionSigner, blob: Address, index: number) {
+      return ix(
+        [signer(reporter), writable(blob), readonly(await pdas.config(program)), readonly(SLOT_HASHES_ADDRESS)],
+        encodeInstructionData('failChallenge', { index }),
+      );
+    },
+
+    async claimShardRewards(holder: TransactionSigner, blob: Address, index: number) {
+      return ix(
+        [
+          signer(holder),
+          writable(await pdas.replicator(holder.address, program)),
+          writable(blob),
+          readonly(await pdas.config(program)),
+        ],
+        encodeInstructionData('claimShardRewards', { index }),
+      );
+    },
+
+    async extendBlob(owner: TransactionSigner, blob: Address, treasury: Address, epochs: number, maxFee: bigint) {
+      return ix(
+        [signer(owner), writable(blob), readonly(await pdas.config(program)), writable(treasury), readonly(SYSTEM_PROGRAM_ADDRESS)],
+        encodeInstructionData('extendBlob', { epochs, maxFee }),
+      );
+    },
+
+    async closeBlob(owner: TransactionSigner, blob: Address) {
+      return ix([signer(owner), writable(blob), readonly(await pdas.config(program))], encodeInstructionData('closeBlob'));
     },
 
     async createRecord(owner: TransactionSigner, nonce: bigint, schema: string, content: Uint8Array) {
@@ -325,8 +488,63 @@ export function transferSol(from: TransactionSigner, to: Address, lamports: bigi
 
 // ── Economics (mirrors Config::quote / split_fee) ────────────────────────────
 
-export function quoteChunk(config: Pick<ConfigAccount, 'baseFeePerReplica' | 'pricePerByte'>, size: number, replicas: number): bigint {
-  return BigInt(replicas) * (config.baseFeePerReplica + BigInt(size) * config.pricePerByte);
+const MIB = 1_048_576n;
+
+export function quoteChunk(config: Pick<ConfigAccount, 'baseFeePerReplica' | 'pricePerMib'>, size: number, replicas: number): bigint {
+  const storage = (BigInt(size) * config.pricePerMib + MIB - 1n) / MIB;
+  return BigInt(replicas) * (config.baseFeePerReplica + storage);
+}
+
+/** Blob price (mirrors Config::quote_blob) */
+export function quoteBlob(
+  config: Pick<ConfigAccount, 'baseFeePerReplica' | 'pricePerMibEpoch'>,
+  shardSize: bigint,
+  totalShards: number,
+  epochs: number,
+): bigint {
+  const storage = (shardSize * config.pricePerMibEpoch * BigInt(epochs) + MIB - 1n) / MIB;
+  return BigInt(totalShards) * (config.baseFeePerReplica + storage);
+}
+
+/** Protocol share and per-slot, per-epoch reward of a blob fee (mirrors open_blob) */
+export function splitBlobFee(config: Pick<ConfigAccount, 'protocolFeeBps'>, fee: bigint, totalShards: number, epochs: number) {
+  const slotEpochs = BigInt(totalShards) * BigInt(epochs);
+  const protocol = (fee * BigInt(config.protocolFeeBps)) / 10_000n;
+  const rewardPerShardEpoch = (fee - protocol) / slotEpochs;
+  return { protocolFee: fee - rewardPerShardEpoch * slotEpochs, rewardPerShardEpoch };
+}
+
+/** Size of a Blob account (mirrors Blob::space) */
+export function blobAccountSize(totalShards: number): number {
+  return 8 + 32 * 2 + 6 + 8 * 2 + 4 + 8 * 3 + 4 + 72 * totalShards;
+}
+
+/** Reward of one slot over [from, to), prorated per second (mirrors Blob::reward_between) */
+export function rewardBetween(blob: Pick<BlobAccount, 'rewardPerShardEpoch'>, epochSeconds: bigint, from: bigint, to: bigint): bigint {
+  if (to <= from || epochSeconds <= 0n) return 0n;
+  return (blob.rewardPerShardEpoch * (to - from)) / epochSeconds;
+}
+
+/**
+ * The hash a challenge's randomness comes from: the first produced slot at or
+ * after `challengeSlot` (a skipped slot has no entry), from the raw SlotHashes
+ * sysvar data (`u64 len`, then `(u64 slot, [u8; 32] hash)` newest first).
+ */
+export function challengeSlotHash(slotHashes: Uint8Array, challengeSlot: bigint): Uint8Array | null {
+  const view = new DataView(slotHashes.buffer, slotHashes.byteOffset, slotHashes.byteLength);
+  const count = Number(view.getBigUint64(0, true));
+  let found: Uint8Array | null = null;
+  for (let i = 0; i < count && 8 + i * 40 + 40 <= slotHashes.length; i++) {
+    if (view.getBigUint64(8 + i * 40, true) < challengeSlot) break;
+    found = slotHashes.slice(16 + i * 40, 48 + i * 40);
+  }
+  return found;
+}
+
+/** The segment a challenge asks for: sha256(slotHash ‖ blob ‖ [index]) as u64 LE mod segments */
+export function challengedSegment(slotHash: Uint8Array, blob: Address, index: number, segments: bigint): bigint {
+  const seed = sha256(Uint8Array.from([...slotHash, ...(addr(blob) as Uint8Array), index]));
+  return new DataView(seed.buffer, seed.byteOffset, 8).getBigUint64(0, true) % segments;
 }
 
 export function splitFee(config: Pick<ConfigAccount, 'protocolFeeBps'>, fee: bigint, replicas: number) {

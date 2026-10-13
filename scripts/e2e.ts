@@ -31,11 +31,13 @@ import {
 /**
  * End-to-end check against a running soladb-node:
  *
- *   1. Raw chunk: open (paying the fee) → write its segments to the ledger →
- *      the node rebuilds it, confirms on-chain and gets paid → Cool →
- *      GET /chunk/:id/data returns the same bytes
- *   2. SDK file: encrypted multi-chunk upload (session key, v1 segment
- *      transactions) → Cool → download through the node only
+ *   1. Ledger chunk: open (paying the fee) → write its segments to the
+ *      ledger → the node rebuilds it, confirms on-chain and gets paid → the
+ *      confirmation closes the chunk (rent back) → GET /chunk/:id/data
+ *      returns the same bytes
+ *   2. SDK file, direct mode: encrypted multi-chunk upload sent straight to
+ *      the node (one wallet transaction, no ledger writes) → the node checks
+ *      and confirms → chunk rent back → download through the node only
  *   3. Sharing: a second wallet registers, gets access and decrypts the file
  *
  * Usage (node running against the same deployment):
@@ -60,7 +62,14 @@ const main = async () => {
     sha256(new TextEncoder().encode(`soladb-e2e-viewer:${uploader.address}`)),
   );
   const sdkDeployment = { ...deployment, nodes: [NODE_URL] };
-  const owner = new SolaDBClient({ rpc, signer: uploader, deployment: sdkDeployment, chunkSize: 16 * 1024, ledgerFallback: false });
+  const owner = new SolaDBClient({
+    rpc,
+    signer: uploader,
+    deployment: sdkDeployment,
+    mode: 'direct',
+    directChunkSize: 16 * 1024,
+    ledgerFallback: false,
+  });
   const reader = new SolaDBClient({ rpc, signer: viewer, deployment: sdkDeployment, ledgerFallback: false });
   const ix = soladbInstructions();
 
@@ -81,7 +90,7 @@ const main = async () => {
   const registered = await owner.register();
   if (registered) console.log(`[${elapsed()}] Registered encryption key (${registered})`);
 
-  // ── 2. Raw chunk: open → segments → node confirms → Cool → GET bytes ──────
+  // ── 2. Ledger chunk: open → segments → node confirms (closes it) → GET bytes
   const data = new Uint8Array(randomBytes(CHUNK_BYTES));
   const contentHash = sha256(data);
   const chunk = await pdas.chunk(uploader.address, contentHash);
@@ -108,14 +117,18 @@ const main = async () => {
   console.log(`[${elapsed()}] Uploaded ${CHUNK_BYTES} bytes in ${writes.length} segments → chunk ${chunk}`);
   console.log(`         fee ${sol(fee)}, open ${openSignature}`);
 
-  let account = (await fetchAccount<ChunkAccount>(rpc, chunk, 'Chunk'))!.data;
-  while (account.state !== 'Cool') {
+  // 1 replica: the node's confirmation pays it and closes the chunk
+  let account = (await fetchAccount<ChunkAccount>(rpc, chunk, 'Chunk'))?.data ?? null;
+  while (account && account.state !== 'Cool') {
     if (Date.now() > deadline) throw new Error(`Timed out waiting for the node to confirm (state ${account.state})`);
     await sleep(1000);
-    account = (await fetchAccount<ChunkAccount>(rpc, chunk, 'Chunk'))!.data;
+    account = (await fetchAccount<ChunkAccount>(rpc, chunk, 'Chunk'))?.data ?? null;
   }
   const secondsToCool = (Date.now() - uploadedAt) / 1000;
-  console.log(`[${elapsed()}] Chunk is Cool, confirmed by ${account.replicators.join(', ')} (${secondsToCool.toFixed(1)} s after upload)`);
+  console.log(
+    `[${elapsed()}] Chunk is Cool${account ? `, confirmed by ${account.replicators.join(', ')}` : ' and closed by its last confirmation (rent back)'}` +
+      ` (${secondsToCool.toFixed(1)} s after upload)`,
+  );
 
   const response = await fetch(`${NODE_URL}/chunk/${chunk}/data`);
   if (!response.ok) throw new Error(`GET /chunk/${chunk}/data → HTTP ${response.status}`);
@@ -125,17 +138,31 @@ const main = async () => {
   if (!identical) throw new Error('E2E FAILED at the raw chunk step');
   results.rawChunk = { chunk, bytes: CHUNK_BYTES, segments: writes.length, feeLamports: fee.toString(), openSignature, secondsToCool };
 
-  // ── 3. SDK file: encrypted multi-chunk upload → Cool → download via node ───
+  // ── 3. SDK file, direct: chunks go straight to the node → Cool → rent back ─
   const file = new Uint8Array(randomBytes(40_000));
+  const balanceBefore = (await rpc.getBalance(uploader.address).send()).value;
   const upload = await owner.uploadFile(file, {
     name: 'e2e-report.bin',
-    onProgress: (p) => {
-      if (p.stage !== 'segments' || p.done === p.total) console.log(`         [${p.done}/${p.total}] ${p.stage}`);
-    },
+    onProgress: (p) => console.log(`         [${p.done}/${p.total}] ${p.stage}`),
   });
-  console.log(`[${elapsed()}] SDK upload: record ${upload.recordId}, ${upload.chunks.length} chunks, ${upload.segmentTransactions} segment txs`);
+  console.log(
+    `[${elapsed()}] SDK upload (${upload.mode}): record ${upload.recordId}, ${upload.chunks.length} chunks, ` +
+      `${upload.signatures.length} wallet tx, ${upload.segmentTransactions} segment txs, accepted by ${upload.nodes.join(', ')}`,
+  );
   await owner.waitUntilCool(upload.chunks, { timeoutMs: Math.max(deadline - Date.now(), 1000) });
-  console.log(`[${elapsed()}] All file chunks are Cool`);
+  const closed = (await owner.chunkStatus(upload.chunks)).filter((c) => c.state === 'Closed').length;
+  const recordSpace = (await rpc.getAccountInfo(upload.recordId, { encoding: 'base64' }).send()).value!.space;
+  const recordRent = await rpc.getMinimumBalanceForRentExemption(recordSpace).send();
+  const spent = balanceBefore - (await rpc.getBalance(uploader.address).send()).value;
+  const networkFees = spent - upload.feePaid - recordRent;
+  // the uploader may also be the treasury (localnet): it gets the protocol share back
+  const isTreasury = config.treasury === uploader.address;
+  const rentCameBack = spent <= upload.feePaid + recordRent + 5_000n * BigInt(upload.signatures.length);
+  console.log(
+    `[${elapsed()}] All file chunks are Cool; ${closed}/${upload.chunks.length} closed by their last confirmation — ` +
+      `spent ${sol(spent)} = fee ${sol(upload.feePaid)} + record rent ${sol(recordRent)} + network ${sol(networkFees)}` +
+      `${isTreasury ? ' (minus the protocol share, back to this wallet as treasury)' : ''}; chunk rent ${sol(upload.rentDeposit - recordRent)} came back: ${rentCameBack}`,
+  );
   const fileOk = async (client: SolaDBClient) => {
     let lastError = '';
     while (Date.now() < deadline) {
@@ -164,11 +191,16 @@ const main = async () => {
 
   results.sdkFile = {
     recordId: upload.recordId,
+    mode: upload.mode,
     bytes: file.length,
     chunks: upload.chunks.length,
+    chunksClosed: closed,
     segmentTransactions: upload.segmentTransactions,
     feeLamports: upload.feePaid.toString(),
     rentDepositLamports: upload.rentDeposit.toString(),
+    rentKeptLamports: recordRent.toString(),
+    networkFeeLamports: networkFees.toString(),
+    spentLamports: spent.toString(),
     walletSignatures: upload.signatures,
     ownerDownloadOk: ownerOk,
     viewer: viewer.address,
@@ -176,7 +208,7 @@ const main = async () => {
     viewerDownloadOk: viewerOk,
   };
   results.finishedAt = new Date().toISOString();
-  results.passed = ownerOk && viewerOk;
+  results.passed = ownerOk && viewerOk && closed === upload.chunks.length && rentCameBack;
 
   const out = path.join(ROOT, 'deployments', `e2e-solana-${cluster}.json`);
   fs.writeFileSync(out, `${JSON.stringify(results, null, 2)}\n`);
@@ -186,8 +218,9 @@ const main = async () => {
   console.log(`Share:   ${explorerLink(cluster, 'tx', shareSignature)}`);
   console.log(`Results: ${path.relative(process.cwd(), out)}`);
   if (!results.passed) throw new Error('E2E FAILED at the SDK / sharing step');
-  console.log('\nE2E PASSED: open → ledger segments → node confirmation (paid) → Cool → GET /chunk/:id/data returned the same bytes;');
-  console.log('            encrypted file downloaded through the node by its owner and by the wallet it was shared with');
+  console.log('\nE2E PASSED: ledger chunk → node confirmation (paid, chunk closed) → GET /chunk/:id/data returned the same bytes;');
+  console.log('            direct file → node checked + confirmed, chunk rent back → downloaded through the node by its owner');
+  console.log('            and by the wallet it was shared with');
 };
 
 main().catch((error) => {

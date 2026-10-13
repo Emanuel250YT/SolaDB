@@ -26,6 +26,8 @@ import {
   fetchAccount,
   pdas,
   readChunkFromLedger,
+  sha256,
+  toHex,
   TransactionSender,
 } from '../src';
 
@@ -65,8 +67,9 @@ async function funded(sol = 20n): Promise<KeyPairSigner> {
   return signer;
 }
 
+// ledger uploads of uncompressed bytes unless a test says otherwise (exact segment counts)
 const client = (signer: KeyPairSigner, extra: Partial<ConstructorParameters<typeof SolaDBClient>[0]> = {}) =>
-  new SolaDBClient({ rpc, signer, chunkSize: 256 * 1024, ...extra });
+  new SolaDBClient({ rpc, signer, chunkSize: 256 * 1024, mode: 'ledger', compress: false, ...extra });
 
 /** What a replicator node does: rebuild from the ledger, check, confirm */
 async function replicate(node: KeyPairSigner, chunks: Address[]) {
@@ -75,7 +78,7 @@ async function replicate(node: KeyPairSigner, chunks: Address[]) {
     assert.ok(account, 'chunk exists');
     const data = await readChunkFromLedger(rpc, chunk, account.data.contentHash);
     assert.equal(data.length, account.data.size);
-    await sender.send({ feePayer: node, instructions: [await ix.confirmReplication(node, chunk)] });
+    await sender.send({ feePayer: node, instructions: [await ix.confirmReplication(node, chunk, account.data.owner)] });
   }
 }
 
@@ -102,10 +105,15 @@ describe('SolaDB on a local validator', { concurrency: false }, async () => {
           await ix.initialize(admin, {
             treasury: admin.address,
             baseFeePerReplica: 20_000n,
-            pricePerByte: 2n,
+            pricePerMib: 2_097_152n,
             protocolFeeBps: 1_000,
             replicationThresholdPct: 60,
             replicationWindow: 3_600n,
+            epochSeconds: 60n,
+            pricePerMibEpoch: 1_000n,
+            challengeWindowSlots: 150n,
+            challengeCooldown: 0n,
+            challengerBountyBps: 1_000,
           }),
         ],
       });
@@ -188,7 +196,7 @@ describe('SolaDB on a local validator', { concurrency: false }, async () => {
     const result = await a.uploadFile(big, { name: 'dataset.bin' });
     assert.equal(result.chunks.length, 26, '25 data chunks + 1 index chunk');
     const manifest = await a.getManifest(result.recordId);
-    assert.ok(manifest.index, 'manifest points at the index chunk');
+    assert.ok(manifest.v === 2 && manifest.index, 'manifest points at the index chunk');
     assert.equal(manifest.chunkCount, 25);
     assert.deepEqual((await a.downloadFile(result.recordId)).data, big);
   });
@@ -201,18 +209,65 @@ describe('SolaDB on a local validator', { concurrency: false }, async () => {
     assert.deepEqual((await a.downloadFile(result.recordId)).data, small);
   });
 
-  test('settled chunks close to refund rent and stay readable', { skip }, async () => {
+  test('the last confirmation closes the chunk and refunds its rent; the file stays readable', { skip }, async () => {
     const a = client(alice, { replicas: 1 });
     const data = bytes(20_000, 5);
     const result = await a.uploadFile(data, { name: 'recibo.json' });
-    await replicate(node, result.chunks);
+    const rent = (await rpc.getBalance(result.chunks[0]).send()).value - (await fetchAccount<ChunkAccount>(rpc, result.chunks[0], 'Chunk'))!.data.rewardPerReplica;
 
     const before = (await rpc.getBalance(alice.address).send()).value;
-    const { closed } = await a.reclaimDeposits(result.recordId);
-    assert.equal(closed, 1);
-    assert.ok((await rpc.getBalance(alice.address).send()).value > before, 'rent came back');
+    await replicate(node, result.chunks);
+    assert.equal((await rpc.getBalance(alice.address).send()).value - before, rent, 'rent came back without a transaction');
     assert.equal((await a.chunkStatus(result.chunks))[0].state, 'Closed');
+    assert.equal((await a.reclaimDeposits(result.recordId)).closed, 0, 'nothing left to reclaim');
     assert.deepEqual((await a.downloadFile(result.recordId)).data, data, 'ledger history still serves it');
+  });
+
+  test('direct uploads: one wallet transaction, no ledger writes, compressed, rent back on replication', { skip }, async () => {
+    const pushed = new Map<string, Uint8Array>();
+    const a = client(alice, {
+      mode: 'direct',
+      compress: true,
+      replicas: 1,
+      pushChunk: async (ref, data) => void pushed.set(ref.address, data),
+      fetchChunk: async (ref) => {
+        const data = pushed.get(ref.address);
+        if (!data) throw new Error('not pushed');
+        return data;
+      },
+    });
+    const csv = new TextEncoder().encode('fecha,monto,concepto\n2026-10-12,1500,hosting\n'.repeat(10_000));
+    const quote = await a.quoteFile(csv.length, 1, 'direct');
+    const ledgerQuote = await a.quoteFile(csv.length, 1, 'ledger');
+    assert.equal(quote.segments, 0);
+    assert.ok(quote.networkFee * 20n < ledgerQuote.networkFee, 'no segment transactions');
+
+    const before = (await rpc.getBalance(alice.address).send()).value;
+    const result = await a.uploadFile(csv, { name: 'gastos.csv', mime: 'text/csv' });
+    assert.equal(result.mode, 'direct');
+    assert.equal(result.segmentTransactions, 0);
+    assert.equal(result.signatures.length, 1, 'one wallet transaction');
+    assert.equal(result.chunks.length, 1);
+    assert.ok(result.storedSize * 10 < csv.length, `gzip: ${csv.length} → ${result.storedSize} bytes`);
+
+    const chunk = (await fetchAccount<ChunkAccount>(rpc, result.chunks[0], 'Chunk'))!.data;
+    assert.equal(chunk.segmentSize, 0);
+    assert.equal(chunk.state, 'Hot');
+    assert.equal(chunk.size, result.storedSize + 28);
+    // the node checks the pushed bytes against the on-chain hash, then confirms
+    assert.equal(toHex(sha256(pushed.get(result.chunks[0])!)), toHex(chunk.contentHash));
+    await sender.send({ feePayer: node, instructions: [await ix.confirmReplication(node, result.chunks[0], chunk.owner)] });
+    assert.equal((await a.chunkStatus(result.chunks))[0].state, 'Closed');
+
+    // the wallet paid the fee, one signature and the record's rent; the chunk's rent came back
+    const spent = before - (await rpc.getBalance(alice.address).send()).value;
+    const recordRent = await rpc.getMinimumBalanceForRentExemption(BigInt((await rpc.getAccountInfo(result.recordId, { encoding: 'base64' }).send()).value!.space)).send();
+    assert.equal(spent, result.feePaid + recordRent + 5_000n);
+    console.log(`  ${csv.length} B CSV direct: fee ${result.feePaid}, kept rent ${recordRent}, network 5000 lamports`);
+
+    assert.deepEqual((await a.downloadFile(result.recordId)).data, csv);
+    // no ledger copy: without a node holding it, the file is unavailable
+    await assert.rejects(client(alice, { nodeUrls: [] }).downloadFile(result.recordId), /unavailable/);
   });
 
   test('listing and deleting files', { skip }, async () => {
@@ -227,15 +282,29 @@ describe('SolaDB on a local validator', { concurrency: false }, async () => {
     assert.ok(!(await client(bob).listFiles()).some((f) => f.recordId === recordId), 'grant was revoked with it');
   });
 
-  test('rent of chunks orphaned by a deleted record can still be reclaimed', { skip }, async () => {
+  test('rent of chunks no record points to can still be reclaimed', { skip }, async () => {
     const a = client(alice, { replicas: 1 });
-    const result = await a.uploadFile(bytes(9_000, 8), { name: 'temporal.bin' });
-    await replicate(node, result.chunks);
-    await a.deleteFile(result.recordId, { closeChunks: false });
-    assert.equal((await a.chunkStatus(result.chunks))[0].state, 'Cool', 'chunk outlived its record');
+    // an upload abandoned after opening its chunk
+    const data = bytes(9_000, 8);
+    const contentHash = sha256(data);
+    await sender.send({
+      feePayer: alice,
+      instructions: [
+        await ix.openChunk(alice, config.treasury, {
+          contentHash,
+          size: data.length,
+          segmentSize: 1_000,
+          replicas: 1,
+          writer: alice.address,
+          maxFee: SOL,
+        }),
+      ],
+    });
+    const chunk = await pdas.chunk(alice.address, contentHash);
+    assert.equal((await a.chunkStatus([chunk]))[0].state, 'Pending');
 
     const { closed, lamports } = await a.reclaimAllDeposits();
     assert.ok(closed >= 1 && lamports > 0n);
-    assert.equal((await a.chunkStatus(result.chunks))[0].state, 'Closed');
+    assert.equal((await a.chunkStatus([chunk]))[0].state, 'Closed');
   });
 });

@@ -34,11 +34,16 @@ import {
  *   DEPLOYER_KEYPAIR             admin = program upgrade authority (default ~/.config/solana/id.json,
  *                                .localnet/admin.json on localnet)
  *   TREASURY_ADDRESS             receives the protocol share (default: the admin)
- *   UPLOAD_BASE_FEE_PER_REPLICA  lamports per replica per chunk (default 20000: covers the confirmation)
- *   UPLOAD_PRICE_PER_BYTE        lamports per byte per replica (default 2 ≈ 0.002 SOL/MB/replica)
+ *   UPLOAD_BASE_FEE_PER_REPLICA  lamports per replica per chunk (default 10000: covers the confirmation)
+ *   UPLOAD_PRICE_PER_MIB         lamports per MiB per replica, pro rata (default 20000 ≈ 0.02 SOL/GiB/replica)
  *   PROTOCOL_FEE_BPS             default 1000 (10 %)
  *   REPLICATION_THRESHOLD_PCT    default 60
  *   REPLICATION_WINDOW_SECONDS   default 604800 (7 days)
+ *   EPOCH_SECONDS                blob storage epoch (default 2592000 = 30 days)
+ *   PRICE_PER_MIB_EPOCH          lamports per MiB of shard per epoch (default 200 ≈ 0.0002 SOL/GiB/month)
+ *   CHALLENGE_WINDOW_SLOTS       slots to answer a storage challenge (default 300, max 450)
+ *   CHALLENGE_COOLDOWN_SECONDS   between challenges of one shard (default 3600)
+ *   CHALLENGER_BOUNTY_BPS        share of forfeited rewards for reporting a failed challenge (default 1000)
  *   REPLICATOR_KEYPAIR           replicator wallet to register (its address)
  *   REPLICATOR_ADDRESSES         extra comma-separated replicator addresses
  *   REPLICATOR_ENDPOINT          public URL of the node (default http://localhost:3000)
@@ -66,11 +71,16 @@ const main = async () => {
   // ── 1. Config ──────────────────────────────────────────────────────────────
   const params: ConfigParams = {
     treasury: address(process.env.TREASURY_ADDRESS || admin.address),
-    baseFeePerReplica: BigInt(process.env.UPLOAD_BASE_FEE_PER_REPLICA || '20000'),
-    pricePerByte: BigInt(process.env.UPLOAD_PRICE_PER_BYTE || '2'),
+    baseFeePerReplica: BigInt(process.env.UPLOAD_BASE_FEE_PER_REPLICA || '10000'),
+    pricePerMib: BigInt(process.env.UPLOAD_PRICE_PER_MIB || '20000'),
     protocolFeeBps: Number(process.env.PROTOCOL_FEE_BPS || '1000'),
     replicationThresholdPct: Number(process.env.REPLICATION_THRESHOLD_PCT || '60'),
     replicationWindow: BigInt(process.env.REPLICATION_WINDOW_SECONDS || String(7 * 86_400)),
+    epochSeconds: BigInt(process.env.EPOCH_SECONDS || String(30 * 86_400)),
+    pricePerMibEpoch: BigInt(process.env.PRICE_PER_MIB_EPOCH || '200'),
+    challengeWindowSlots: BigInt(process.env.CHALLENGE_WINDOW_SLOTS || '300'),
+    challengeCooldown: BigInt(process.env.CHALLENGE_COOLDOWN_SECONDS || '3600'),
+    challengerBountyBps: Number(process.env.CHALLENGER_BOUNTY_BPS || '1000'),
   };
 
   // The treasury must stay rent-exempt to receive small protocol fees
@@ -87,10 +97,15 @@ const main = async () => {
   } else if (
     existing.data.treasury !== params.treasury ||
     existing.data.baseFeePerReplica !== params.baseFeePerReplica ||
-    existing.data.pricePerByte !== params.pricePerByte ||
+    existing.data.pricePerMib !== params.pricePerMib ||
     existing.data.protocolFeeBps !== params.protocolFeeBps ||
     existing.data.replicationThresholdPct !== params.replicationThresholdPct ||
-    existing.data.replicationWindow !== params.replicationWindow
+    existing.data.replicationWindow !== params.replicationWindow ||
+    existing.data.epochSeconds !== params.epochSeconds ||
+    existing.data.pricePerMibEpoch !== params.pricePerMibEpoch ||
+    existing.data.challengeWindowSlots !== params.challengeWindowSlots ||
+    existing.data.challengeCooldown !== params.challengeCooldown ||
+    existing.data.challengerBountyBps !== params.challengerBountyBps
   ) {
     if (existing.data.admin !== admin.address) throw new Error(`Config admin is ${existing.data.admin}, not ${admin.address}`);
     const signature = await sender.send({ feePayer: admin, instructions: [await ix.updateConfig(admin, params)], label: 'update_config' });
@@ -100,8 +115,12 @@ const main = async () => {
   }
   const config = (await fetchAccount<ConfigAccount>(rpc, configAddress, 'Config'))!.data;
   console.log(
-    `Pricing:  ${config.baseFeePerReplica} lamports/replica + ${config.pricePerByte} lamports/byte, ` +
+    `Pricing:  ${config.baseFeePerReplica} lamports/replica + ${config.pricePerMib} lamports/MiB, ` +
       `${config.protocolFeeBps / 100}% protocol → ${config.treasury}`,
+  );
+  console.log(
+    `Blobs:    ${config.pricePerMibEpoch} lamports/MiB/epoch, epoch ${config.epochSeconds} s, ` +
+      `challenges answered within ${config.challengeWindowSlots} slots, cooldown ${config.challengeCooldown} s`,
   );
 
   // ── 2. Replicators ─────────────────────────────────────────────────────────
@@ -151,10 +170,15 @@ const main = async () => {
     pricing: {
       treasury: config.treasury,
       baseFeePerReplicaLamports: config.baseFeePerReplica.toString(),
-      pricePerByteLamports: config.pricePerByte.toString(),
+      pricePerMibLamports: config.pricePerMib.toString(),
       protocolFeeBps: config.protocolFeeBps,
       replicationThresholdPct: config.replicationThresholdPct,
       replicationWindowSeconds: Number(config.replicationWindow),
+      epochSeconds: Number(config.epochSeconds),
+      pricePerMibEpochLamports: config.pricePerMibEpoch.toString(),
+      challengeWindowSlots: Number(config.challengeWindowSlots),
+      challengeCooldownSeconds: Number(config.challengeCooldown),
+      challengerBountyBps: config.challengerBountyBps,
     },
     replicators: registered,
     nodes,

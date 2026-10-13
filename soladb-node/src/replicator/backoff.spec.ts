@@ -5,6 +5,7 @@ describe('classifyFailure', () => {
     expect(classifyFailure(new Error('Chunk rebuilt from the ledger does not match its content hash'))).toBe('invalid');
     expect(classifyFailure(new Error('Segment 3 is missing from the ledger'))).toBe('incomplete');
     expect(classifyFailure(new Error('No segments found in the ledger'))).toBe('incomplete');
+    expect(classifyFailure(new Error('not available from any peer yet (3 tried)'))).toBe('incomplete');
     expect(classifyFailure(new Error('fetch failed'))).toBe('error');
     expect(classifyFailure('weird')).toBe('error');
   });

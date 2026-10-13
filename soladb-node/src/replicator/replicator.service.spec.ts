@@ -10,11 +10,12 @@ import {
   SolaDBTransactionError,
   ChunkAccount,
   FetchedAccount,
+  MAX_DIRECT_CHUNK_SIZE,
   ReplicatorAccount,
 } from '@soladb/sdk';
 import { ReplicatorService, SETTLED_TTL_MS } from './replicator.service';
 import { DEFAULT_BACKOFF } from './backoff';
-import { SolanaService } from '../solana/solana.service';
+import { ChunkToConfirm, SolanaService } from '../solana/solana.service';
 import { StorageService } from '../storage/storage.service';
 import { FsChunkStore } from '../storage/fs-chunk-store.service';
 import { FileMetadataService } from '../storage/file-metadata.service';
@@ -22,24 +23,31 @@ import { FileMetadataService } from '../storage/file-metadata.service';
 const newAddress = () => getAddressDecoder().decode(randomBytes(32)) as Address;
 const sha256 = (data: Uint8Array) => createHash('sha256').update(data).digest();
 
+const peer = (authority: Address, endpoint: string, active = true): ReplicatorAccount => ({
+  authority,
+  active,
+  bump: 255,
+  registeredAt: 1n,
+  confirmations: 0n,
+  lamportsEarned: 0n,
+  endpoint,
+});
+
 /**
  * In-memory stand-in for SolanaService: a set of Chunk accounts, the bytes
- * their write_segment transactions put in the ledger, and this node's
- * Replicator account.  Scans return snapshots, like an RPC would.
+ * their write_segment transactions put in the ledger, this node's Replicator
+ * account and the other registered replicators.  Scans return snapshots,
+ * like an RPC would.
  */
 class FakeSolana {
   readonly address = newAddress();
   readonly accounts = new Map<Address, ChunkAccount>();
   readonly ledger = new Map<Address, Uint8Array>();
-  replicator: ReplicatorAccount | null = {
-    authority: this.address,
-    active: true,
-    bump: 255,
-    registeredAt: 1n,
-    confirmations: 0n,
-    lamportsEarned: 0n,
-    endpoint: 'http://node',
-  };
+  replicator: ReplicatorAccount | null = peer(this.address, 'http://node');
+  /** Every registered replicator (peers serving direct chunks) */
+  peers: ReplicatorAccount[] = [];
+  /** Look-alike accounts another program created (not at a SolaDB chunk PDA) */
+  readonly forged = new Set<Address>();
   /** Next confirm_replication outcome: sends normally when undefined */
   confirmError: Error | undefined;
   /** When set, scans keep returning this stale view (scan commitment lag) */
@@ -74,6 +82,13 @@ class FakeSolana {
     return address;
   }
 
+  /** A direct chunk: no segments, waiting for replicas from the start, never in the ledger */
+  addDirect(bytes: Uint8Array, overrides: Partial<ChunkAccount> = {}): Address {
+    const address = this.addChunk(bytes, { segmentSize: 0, segmentsTotal: 0, segmentsWritten: 0, ...overrides });
+    this.ledger.delete(address);
+    return address;
+  }
+
   private snapshot(address: Address): FetchedAccount<ChunkAccount> {
     return { address, data: structuredClone(this.accounts.get(address)), lamports: 1_000_000n };
   }
@@ -94,24 +109,42 @@ class FakeSolana {
     return { data, slot: 4242n };
   });
 
-  confirmReplication = jest.fn(async (chunk: Address) => {
+  /** Mirrors confirm_replication: a transaction is atomic, so every chunk is checked before any is applied */
+  private confirm(chunks: ChunkToConfirm[]): string {
     if (this.confirmError) {
       const err = this.confirmError;
       this.confirmError = undefined;
       throw err;
     }
-    const account = this.accounts.get(chunk);
-    if (account.replicators.includes(this.address)) {
-      throw new SolaDBTransactionError('AlreadyReplicated', SOLADB_ERRORS.AlreadyReplicated);
+    const fail = (name: string, code = SOLADB_ERRORS[name]) => {
+      throw new SolaDBTransactionError(`confirm_replication failed (${name})`, code);
+    };
+    for (const { address, owner } of chunks) {
+      const account = this.accounts.get(address);
+      if (!account) fail('AccountNotInitialized', 3012);
+      if (owner !== account.owner) fail('InvalidChunkOwner');
+      if (account.reclaimed) fail('ReplicationClosed');
+      if (account.confirmedReplicas >= account.requiredReplicas) fail('FullyReplicated');
+      if (account.replicators.includes(this.address)) fail('AlreadyReplicated');
     }
-    account.replicators.push(this.address);
-    account.confirmedReplicas++;
-    if (account.confirmedReplicas === account.requiredReplicas) account.needsReplicas = false;
-    if (account.confirmedReplicas >= Math.max(1, Math.floor((account.requiredReplicas * 60) / 100))) account.state = 'Cool';
+    for (const { address } of chunks) {
+      const account = this.accounts.get(address);
+      account.replicators.push(this.address);
+      account.confirmedReplicas++;
+      if (account.confirmedReplicas === account.requiredReplicas) account.needsReplicas = false;
+      if (account.confirmedReplicas >= Math.max(1, Math.floor((account.requiredReplicas * 60) / 100))) account.state = 'Cool';
+      // the last confirmation closes the account (rent back to the owner)
+      if (account.confirmedReplicas === account.requiredReplicas) this.accounts.delete(address);
+    }
     return `sig${++this.signatures}`;
-  });
+  }
 
-  getChunk = jest.fn(async (chunk: Address) => (this.accounts.has(chunk) ? this.snapshot(chunk) : null));
+  confirmReplication = jest.fn(async (chunk: Address, owner: Address) => this.confirm([{ address: chunk, owner }]));
+  confirmReplications = jest.fn(async (chunks: ChunkToConfirm[]) => this.confirm(chunks));
+  listReplicators = jest.fn(async () => structuredClone(this.peers));
+
+  getChunk = jest.fn(async (chunk: Address, _commitment?: string) => (this.accounts.has(chunk) ? this.snapshot(chunk) : null));
+  isChunkAddress = jest.fn(async (chunk: Address) => !this.forged.has(chunk));
   getChunks = jest.fn(async (chunks: Address[]) => chunks.map((c) => (this.accounts.has(c) ? this.snapshot(c) : null)));
   updateEndpoint = jest.fn(async () => 'sigEndpoint');
 }
@@ -155,26 +188,43 @@ describe('ReplicatorService', () => {
   });
 
   afterEach(() => {
+    jest.useRealTimers();
     jest.restoreAllMocks();
     fs.rmSync(dataDir, { recursive: true, force: true });
   });
 
+  /** Batches leave only when full or at the end of a scan (the 250 ms timer never fires) */
+  const holdBatchTimer = () =>
+    jest.useFakeTimers({
+      doNotFake: ['Date', 'hrtime', 'nextTick', 'performance', 'queueMicrotask', 'setImmediate', 'clearImmediate', 'setInterval', 'clearInterval'],
+    });
+
+  /** Peers answer from `routes` (bytes, or an HTTP status); other URLs are unreachable */
+  const servePeers = (routes: Record<string, Uint8Array | number>) =>
+    jest.spyOn(global, 'fetch').mockImplementation(async (input) => {
+      const route = routes[String(input)];
+      if (route === undefined) throw new TypeError('fetch failed');
+      return typeof route === 'number' ? new Response('not here', { status: route }) : new Response(new Uint8Array(route));
+    });
+
   it('rebuilds a new chunk from the ledger, stores it and confirms it', async () => {
     const bytes = randomBytes(10_000);
     const chunk = solana.addChunk(bytes);
+    const owner = solana.accounts.get(chunk).owner;
     const replicator = replicatorWith();
 
     const stats = await replicator.scanOnce();
 
     expect(stats).toEqual({ seen: 1, candidates: 1, stored: 1, confirmed: 1, skipped: 0, errors: 0 });
     expect(await storage.getRawChunk(chunk)).toEqual(bytes);
-    expect(solana.confirmReplication).toHaveBeenCalledWith(chunk);
+    expect(solana.confirmReplication).toHaveBeenCalledWith(chunk, owner);
+    expect(solana.accounts.has(chunk)).toBe(false); // the last confirmation closed it
     const meta = await storage.getChunkMeta(chunk);
     expect(meta).toMatchObject({
       chunkId: chunk,
       contentHash: sha256(bytes).toString('hex'),
       size: 10_000,
-      state: 'Cool',
+      state: 'Closed',
       confirmedReplicas: 1,
       replicators: [solana.address],
       rewardPerReplica: '50000',
@@ -182,7 +232,7 @@ describe('ReplicatorService', () => {
       confirmSignature: 'sig1',
     });
     expect(meta.confirmedAt).toBeInstanceOf(Date);
-    expect(replicator.status.totals).toMatchObject({ stored: 1, confirmed: 1, lamportsEarned: '50000' });
+    expect(replicator.status.totals).toMatchObject({ stored: 1, confirmed: 1, lamportsEarned: '50000', transactions: 1 });
   });
 
   it('skips chunks this node already confirmed (and only checks its copy once)', async () => {
@@ -419,5 +469,199 @@ describe('ReplicatorService', () => {
     expect(solana.listChunksNeedingReplicas.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(replicator.status).toMatchObject({ running: false, lastError: '429 Too Many Requests' });
     expect(replicator.status.scans).toBeGreaterThanOrEqual(1);
+  });
+
+  // ── Batched confirmations ───────────────────────────────────────────────────
+
+  it('confirms up to 8 chunks per transaction, each with its owner', async () => {
+    holdBatchTimer();
+    const chunks = Array.from({ length: 10 }, () => solana.addChunk(randomBytes(500)));
+    const owners = new Map(chunks.map((c) => [c, solana.accounts.get(c).owner]));
+    const replicator = replicatorWith({ concurrency: 10 });
+
+    expect(await replicator.scanOnce()).toMatchObject({ candidates: 10, stored: 10, confirmed: 10, errors: 0 });
+    const batches = solana.confirmReplications.mock.calls.map(([batch]) => batch);
+    expect(batches.map((b) => b.length)).toEqual([8, 2]);
+    for (const { address, owner } of batches.flat()) expect(owner).toBe(owners.get(address));
+    expect(solana.confirmReplication).not.toHaveBeenCalled();
+    expect(replicator.status.totals).toMatchObject({ confirmed: 10, transactions: 2, lamportsEarned: '500000' });
+    const signatures = await Promise.all(chunks.map(async (c) => (await storage.getChunkMeta(c)).confirmSignature));
+    expect(new Set(signatures)).toEqual(new Set(['sig1', 'sig2']));
+  });
+
+  it('sends a rejected batch again chunk by chunk, so a settled chunk does not block the others', async () => {
+    holdBatchTimer();
+    const chunks = Array.from({ length: 3 }, () => solana.addChunk(randomBytes(500)));
+    solana.frozen = await solana.listChunksNeedingReplicas();
+    solana.accounts.delete(chunks[1]); // completed (and closed) by other replicas since the scan's view
+    const replicator = replicatorWith();
+
+    expect(await replicator.scanOnce()).toMatchObject({ candidates: 3, stored: 3, confirmed: 2, skipped: 1, errors: 0 });
+    expect(solana.confirmReplications).toHaveBeenCalledTimes(1);
+    expect(solana.confirmReplication).toHaveBeenCalledTimes(3);
+    expect(replicator.status.totals.transactions).toBe(2);
+    for (const chunk of chunks) expect(replicator.backoff.get(chunk)).toBeUndefined();
+    // the closed one is settled too: nothing is sent again while the scan lists it
+    expect(await replicator.scanOnce()).toMatchObject({ candidates: 0 });
+  });
+
+  it('fails the whole batch on a transport error, without retrying chunk by chunk', async () => {
+    holdBatchTimer();
+    const chunks = Array.from({ length: 3 }, () => solana.addChunk(randomBytes(500)));
+    solana.confirmError = new Error('1 transaction(s) not confirmed after 60000 ms');
+    const replicator = replicatorWith();
+
+    expect(await replicator.scanOnce()).toMatchObject({ stored: 3, confirmed: 0, errors: 3 });
+    expect(solana.confirmReplication).not.toHaveBeenCalled();
+    for (const chunk of chunks) expect(replicator.backoff.get(chunk)).toMatchObject({ kind: 'error', attempts: 1 });
+  });
+
+  // ── Direct chunks ───────────────────────────────────────────────────────────
+
+  it('accepts a pushed direct chunk: stores it and confirms it', async () => {
+    const bytes = randomBytes(5_000);
+    const chunk = solana.addDirect(bytes);
+    const owner = solana.accounts.get(chunk).owner;
+    const replicator = replicatorWith();
+
+    expect(await replicator.acceptPush(chunk, bytes)).toEqual({ status: 201, stored: true, confirmed: true, signature: 'sig1' });
+    expect(solana.getChunk).toHaveBeenCalledWith(chunk, 'confirmed');
+    expect(solana.confirmReplication).toHaveBeenCalledWith(chunk, owner);
+    expect(solana.accounts.has(chunk)).toBe(false); // the last confirmation closed it
+    expect(await storage.getRawChunk(chunk)).toEqual(bytes);
+    expect(await storage.getChunkMeta(chunk)).toMatchObject({
+      owner,
+      size: 5_000,
+      state: 'Closed',
+      confirmedReplicas: 1,
+      replicators: [solana.address],
+      slot: null,
+      confirmSignature: 'sig1',
+    });
+    expect(replicator.status).toMatchObject({
+      pushes: { accepted: 1, rejected: 0 },
+      totals: { stored: 1, confirmed: 1, lamportsEarned: '50000', transactions: 1 },
+    });
+    expect(await replicator.scanOnce()).toMatchObject({ seen: 0, errors: 0 });
+  });
+
+  it.each<[string, number, (bytes: Buffer) => { chunk: Address; push: Buffer; owners?: string[] }]>([
+    ['the bytes do not hash to the content hash', 400, (bytes) => ({ chunk: solana.addDirect(bytes), push: randomBytes(bytes.length) })],
+    ['the size differs', 400, (bytes) => ({ chunk: solana.addDirect(bytes), push: bytes.subarray(1) })],
+    ['the chunk is written to the ledger', 409, (bytes) => ({ chunk: solana.addChunk(bytes), push: bytes })],
+    ['the owner reclaimed the chunk', 409, (bytes) => ({ chunk: solana.addDirect(bytes, { reclaimed: true, needsReplicas: false }), push: bytes })],
+    ['the chunk needs no more replicas', 409, (bytes) => ({ chunk: solana.addDirect(bytes, { needsReplicas: false }), push: bytes })],
+    ['the chunk does not exist (yet)', 404, (bytes) => ({ chunk: newAddress(), push: bytes })],
+    ['the account was not created by the program', 404, (bytes) => {
+      const chunk = solana.addDirect(bytes);
+      solana.forged.add(chunk);
+      return { chunk, push: bytes };
+    }],
+    ['the owner is not in REPLICATE_OWNERS', 403, (bytes) => ({ chunk: solana.addDirect(bytes), push: bytes, owners: [newAddress()] })],
+    ['it is larger than 16 MiB', 413, () => ({ chunk: newAddress(), push: Buffer.alloc(MAX_DIRECT_CHUNK_SIZE + 1) })],
+  ])('rejects a push when %s (%i)', async (_, status, setup) => {
+    const { chunk, push, owners } = setup(randomBytes(2_000));
+    const replicator = replicatorWith(owners ? { owners } : {});
+
+    await expect(replicator.acceptPush(chunk, push)).rejects.toMatchObject({ status });
+    expect(await storage.hasChunk(chunk)).toBe(false);
+    expect(solana.confirmReplication).not.toHaveBeenCalled();
+    expect(replicator.status.pushes).toEqual({ accepted: 0, rejected: 1 });
+  });
+
+  it('answers a repeated push idempotently, also once the chunk account closed', async () => {
+    const bytes = randomBytes(3_000);
+    const chunk = solana.addDirect(bytes, { requiredReplicas: 2 });
+    const replicator = replicatorWith();
+
+    expect(await replicator.acceptPush(chunk, bytes)).toMatchObject({ status: 201, confirmed: true });
+    expect(await replicator.acceptPush(chunk, bytes)).toEqual({ status: 200, stored: true, confirmed: true });
+    solana.accounts.delete(chunk); // another replica completed it
+    expect(await replicator.acceptPush(chunk, bytes)).toEqual({ status: 200, stored: true, confirmed: true });
+    await expect(replicator.acceptPush(chunk, randomBytes(3_000))).rejects.toMatchObject({ status: 404 });
+    expect(solana.confirmReplication).toHaveBeenCalledTimes(1);
+    expect(replicator.status.pushes).toEqual({ accepted: 3, rejected: 1 });
+  });
+
+  it('stores a pushed chunk it cannot confirm and says why', async () => {
+    const bytes = randomBytes(1_000);
+    const chunk = solana.addDirect(bytes, { rewardPerReplica: 10n });
+    const replicator = replicatorWith({ minRewardLamports: 1_000n });
+
+    expect(await replicator.acceptPush(chunk, bytes)).toEqual({
+      status: 201,
+      stored: true,
+      confirmed: false,
+      reason: 'reward 10 lamports < MIN_REWARD_LAMPORTS (1000)',
+    });
+    expect(await storage.getRawChunk(chunk)).toEqual(bytes);
+    expect(solana.confirmReplication).not.toHaveBeenCalled();
+  });
+
+  it('copies a direct chunk from a peer: the replicators that confirmed it first, never itself', async () => {
+    const bytes = randomBytes(4_000);
+    const confirmedBy = newAddress();
+    const chunk = solana.addDirect(bytes, { requiredReplicas: 3, confirmedReplicas: 1, replicators: [confirmedBy] });
+    solana.peers = [
+      peer(newAddress(), 'http://node/'), // a second registration with this node's endpoint
+      peer(solana.address, 'http://self'),
+      peer(newAddress(), 'http://good'),
+      peer(newAddress(), 'http://inactive', false),
+      peer(confirmedBy, 'http://liar/'),
+    ];
+    const fetchMock = servePeers({
+      [`http://liar/chunk/${chunk}/data`]: randomBytes(4_000), // not the chunk: skipped
+      [`http://good/chunk/${chunk}/data`]: bytes,
+    });
+    const replicator = replicatorWith();
+
+    expect(await replicator.scanOnce()).toMatchObject({ candidates: 1, stored: 1, confirmed: 1, errors: 0 });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([`http://liar/chunk/${chunk}/data`, `http://good/chunk/${chunk}/data`]);
+    expect(solana.readChunk).not.toHaveBeenCalled();
+    expect(await storage.getRawChunk(chunk)).toEqual(bytes);
+    expect(await storage.getChunkMeta(chunk)).toMatchObject({ slot: null, confirmedReplicas: 2, confirmSignature: 'sig1' });
+  });
+
+  it('retries a direct chunk no peer serves yet (incomplete), until its push arrives', async () => {
+    const bytes = randomBytes(1_000);
+    const chunk = solana.addDirect(bytes);
+    solana.peers = [peer(newAddress(), 'http://a'), peer(newAddress(), 'http://b')];
+    const fetchMock = servePeers({ [`http://a/chunk/${chunk}/data`]: 404 }); // b is unreachable
+    const replicator = replicatorWith();
+
+    expect(await replicator.scanOnce()).toMatchObject({ candidates: 1, stored: 0, confirmed: 0, errors: 1 });
+    expect(replicator.backoff.get(chunk)).toMatchObject({ kind: 'incomplete', retryAt: now + DEFAULT_BACKOFF.baseMs });
+    expect(replicator.status.lastError).toContain('not available from any peer yet (2 tried)');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(await replicator.scanOnce()).toMatchObject({ candidates: 0 }); // backed off
+
+    expect(await replicator.acceptPush(chunk, bytes)).toMatchObject({ status: 201, confirmed: true });
+    expect(replicator.backoff.get(chunk)).toBeUndefined();
+    expect(solana.readChunk).not.toHaveBeenCalled();
+  });
+
+  it('makes a push wait while a scan works on the same chunk', async () => {
+    const bytes = randomBytes(1_000);
+    const chunk = solana.addDirect(bytes);
+    solana.peers = [peer(newAddress(), 'http://slow')];
+    let release: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const fetchMock = jest.spyOn(global, 'fetch').mockImplementation(async () => {
+      await gate;
+      return new Response('not here', { status: 404 });
+    });
+    const replicator = replicatorWith();
+
+    const scan = replicator.scanOnce();
+    while (fetchMock.mock.calls.length === 0) await new Promise((r) => setTimeout(r, 5));
+    let answered = false;
+    const push = replicator.acceptPush(chunk, bytes).finally(() => (answered = true));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(answered).toBe(false);
+
+    release();
+    expect(await scan).toMatchObject({ stored: 0, errors: 1 });
+    expect(await push).toMatchObject({ status: 201, stored: true, confirmed: true });
+    expect(solana.confirmReplication).toHaveBeenCalledTimes(1);
   });
 });

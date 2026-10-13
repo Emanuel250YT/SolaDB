@@ -3,6 +3,11 @@ import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
+  BLOB_SHARD_DATE_FIELDS,
+  BLOB_SHARD_UPDATE_FIELDS,
+  BlobShardQuery,
+  BlobShardRecord,
+  BlobShardUpdate,
   ChunkQuery,
   ChunkRecord,
   ChunkStateUpdate,
@@ -19,9 +24,10 @@ const DATE_FIELDS = ['uploadedAt', 'storedAt', 'confirmedAt'] as const;
 /**
  * FileMetadataService
  *
- * Development metadata store (METADATA_STORE=file): every record lives in
- * memory and is persisted to DATA_DIR/metadata.json.  Queries support the
- * same filters, ordering and pagination as the Oracle store.
+ * Development metadata store (METADATA_STORE=file): every record (chunks
+ * and blob shards) lives in memory and is persisted to DATA_DIR/metadata.json.
+ * Queries support the same filters, ordering and pagination as the Oracle
+ * and Postgres stores.
  *
  * Saves are coalesced (one write per burst of updates) and atomic (temporary
  * file + rename); every mutation resolves once its change is on disk.
@@ -30,6 +36,8 @@ const DATE_FIELDS = ['uploadedAt', 'storedAt', 'confirmedAt'] as const;
 export class FileMetadataService implements MetadataStore, OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(FileMetadataService.name);
   private readonly records = new Map<string, ChunkRecord>();
+  /** Blob shards by `${blob}/${index}` */
+  private readonly shards = new Map<string, BlobShardRecord>();
   private file: string;
 
   private saving: Promise<void> | null = null;
@@ -43,7 +51,7 @@ export class FileMetadataService implements MetadataStore, OnModuleInit, OnModul
     await fs.promises.mkdir(dataDir, { recursive: true });
 
     if (fs.existsSync(this.file)) {
-      let parsed: { version: number; chunks: Record<string, unknown>[] };
+      let parsed: { version: number; chunks: Record<string, unknown>[]; blobShards?: Record<string, unknown>[] };
       try {
         parsed = JSON.parse(await fs.promises.readFile(this.file, 'utf8'));
       } catch (err) {
@@ -53,8 +61,14 @@ export class FileMetadataService implements MetadataStore, OnModuleInit, OnModul
         const record = reviveRecord(raw);
         this.records.set(record.chunkId, record);
       }
+      for (const raw of parsed.blobShards ?? []) {
+        const shard = reviveShard(raw);
+        this.shards.set(shardKey(shard.blob, shard.index), shard);
+      }
     }
-    this.logger.log(`Chunk metadata in ${this.file} (${this.records.size} records)`);
+    this.logger.log(
+      `Chunk metadata in ${this.file} (${this.records.size} records, ${this.shards.size} blob shards)`,
+    );
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -135,6 +149,56 @@ export class FileMetadataService implements MetadataStore, OnModuleInit, OnModul
     return matches.slice(offset, offset + limit).map(cloneRecord);
   }
 
+  // ── Blob shards ─────────────────────────────────────────────────────────────
+
+  async upsertBlobShard(shard: BlobShardRecord): Promise<void> {
+    const key = shardKey(shard.blob, shard.index);
+    const existing = this.shards.get(key);
+    if (!existing) {
+      this.shards.set(key, cloneShard(shard));
+    } else {
+      // Same rules as the SQL upserts: identity fields stay, state is
+      // replaced, nullable fields only by non-null values
+      existing.state = shard.state;
+      existing.fragmentSize = shard.fragmentSize ?? existing.fragmentSize;
+      existing.confirmSignature = shard.confirmSignature ?? existing.confirmSignature;
+      for (const field of BLOB_SHARD_DATE_FIELDS) {
+        if (shard[field]) existing[field] = new Date(shard[field]);
+      }
+    }
+    await this._save();
+  }
+
+  async getBlobShard(blob: string, index: number): Promise<BlobShardRecord | null> {
+    const shard = this.shards.get(shardKey(blob, index));
+    return shard ? cloneShard(shard) : null;
+  }
+
+  async listBlobShards(query: BlobShardQuery = {}): Promise<BlobShardRecord[]> {
+    const limit = Math.min(query.limit ?? DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT);
+    const offset = query.offset ?? 0;
+    const matches = [...this.shards.values()].filter(
+      (s) => (!query.blob || s.blob === query.blob) && (query.state === undefined || s.state === query.state),
+    );
+    matches.sort((a, b) => compare(a.blob, b.blob) || a.index - b.index);
+    return matches.slice(offset, offset + limit).map(cloneShard);
+  }
+
+  async updateBlobShard(blob: string, index: number, update: BlobShardUpdate): Promise<void> {
+    const shard = this.shards.get(shardKey(blob, index));
+    if (!shard) return;
+    for (const field of BLOB_SHARD_UPDATE_FIELDS) {
+      const value = update[field];
+      if (value === undefined) continue;
+      (shard as any)[field] = value instanceof Date ? new Date(value) : value;
+    }
+    await this._save();
+  }
+
+  async deleteBlobShard(blob: string, index: number): Promise<void> {
+    if (this.shards.delete(shardKey(blob, index))) await this._save();
+  }
+
   // ── Persistence ─────────────────────────────────────────────────────────────
 
   /**
@@ -161,7 +225,11 @@ export class FileMetadataService implements MetadataStore, OnModuleInit, OnModul
   }
 
   private async _writeSnapshot(): Promise<void> {
-    const body = JSON.stringify({ version: FILE_VERSION, chunks: [...this.records.values()] }, null, 2);
+    const body = JSON.stringify(
+      { version: FILE_VERSION, chunks: [...this.records.values()], blobShards: [...this.shards.values()] },
+      null,
+      2,
+    );
     const tmp = `${this.file}.${process.pid}.tmp`;
     await fs.promises.writeFile(tmp, body);
     await fs.promises.rename(tmp, this.file);
@@ -194,6 +262,24 @@ function cloneRecord(record: ChunkRecord): ChunkRecord {
     storedAt: new Date(record.storedAt),
     confirmedAt: record.confirmedAt ? new Date(record.confirmedAt) : null,
   };
+}
+
+const shardKey = (blob: string, index: number) => `${blob}/${index}`;
+
+function cloneShard(shard: BlobShardRecord): BlobShardRecord {
+  const copy = { ...shard, fragmentSize: shard.fragmentSize ?? null, confirmSignature: shard.confirmSignature ?? null };
+  for (const field of BLOB_SHARD_DATE_FIELDS) copy[field] = shard[field] ? new Date(shard[field]) : null;
+  return copy;
+}
+
+/** JSON → BlobShardRecord */
+function reviveShard(raw: Record<string, unknown>): BlobShardRecord {
+  const shard = { fragmentSize: null, confirmSignature: null, ...raw } as unknown as BlobShardRecord;
+  for (const field of BLOB_SHARD_DATE_FIELDS) {
+    const value = raw[field];
+    shard[field] = value ? new Date(value as string) : null;
+  }
+  return shard;
 }
 
 /** JSON → ChunkRecord (dates come back as ISO strings) */

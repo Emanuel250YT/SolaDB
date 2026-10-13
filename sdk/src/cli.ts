@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createKeyPairSignerFromBytes, KeyPairSigner } from '@solana/kit';
-import { SolaDBClient, SolaDBDeployment } from './client';
+import { SolaDBClient, SolaDBDeployment, UploadMode } from './client';
 import { DEPLOYMENTS } from './deployments';
 import { toHex } from './manifest';
 
@@ -13,13 +13,24 @@ Usage: soladb <command> [args]
 
   whoami                          Address, balance, identity and encryption key
   register                        Publish this wallet's encryption key
-  quote <file> [--replicas N]     Cost of uploading a file
-  upload <file> [--replicas N] [--wait]
-                                  Encrypt, upload and register a file
-  download <recordId> [-o PATH]   Download and decrypt a file
+  quote <file> [--mode M] [--epochs E] [--replicas N]
+                                  Cost of uploading a file
+  upload <file> [--mode M] [--epochs E] [--redundancy R] [--no-compress] [--wait]
+                                  Compress, encrypt, upload and register a file
+                                  --mode blob (erasure-coded shards on the
+                                  nodes, prepaid E epochs: the default when a
+                                  node answers), ledger (Solana ledger), direct
+                                  (whole chunks on the nodes) or auto
+  upload-many <name> <files…> [--epochs E]
+                                  Many small files as one bundle (one account)
+  download <recordId> [-o PATH] [--entry NAME]
+                                  Download and decrypt a file (--entry: one
+                                  file of a bundle)
+  bundle <recordId> [-d DIR]      Download every file of a bundle into DIR
+  extend <recordId> <epochs>      Prepay more storage epochs for a blob file
   share <recordId> <address>      Give a registered wallet read access
   revoke <recordId> <address>     Remove read access
-  status <recordId>               Replication state of every chunk
+  status <recordId>               Replication state of every chunk / blob
   reclaim [recordId]              Close settled chunks and recover their rent
                                   (no recordId: every settled chunk you own)
   rm <recordId>                   Revoke every grant, delete the record, close chunks
@@ -33,6 +44,8 @@ Environment:
   SOLANA_RPC_URL     RPC endpoint (defaults to the deployment's)
   SOLADB_NODE_URLS   comma-separated replicator URLs tried first for downloads
   SOLADB_TX_VERSION  1 (default, 4 KiB segment transactions) or 0
+  SOLADB_MODE        default upload mode: auto, blob, direct or ledger
+  SOLADB_EPOCHS      default blob storage epochs (12)
 `;
 
 const LAMPORTS = 1_000_000_000;
@@ -65,6 +78,8 @@ async function makeClient(): Promise<SolaDBClient> {
     rpc: process.env.SOLANA_RPC_URL ?? deployment.rpcUrl,
     nodeUrls: nodeUrls.length ? nodeUrls : deployment.nodes,
     segmentTxVersion: process.env.SOLADB_TX_VERSION === '0' ? 0 : 1,
+    mode: uploadMode(process.env.SOLADB_MODE ?? 'auto'),
+    epochs: Number(process.env.SOLADB_EPOCHS ?? '12'),
     // a CLI keypair signs without prompts: no session key needed
     sessionWriter: false,
   });
@@ -82,6 +97,13 @@ function option(args: string[], name: string): string | undefined {
   if (i === -1) return undefined;
   const value = args[i + 1];
   args.splice(i, 2);
+  return value;
+}
+
+function uploadMode(value: string): UploadMode {
+  if (value !== 'auto' && value !== 'blob' && value !== 'direct' && value !== 'ledger') {
+    throw new Error(`Unknown mode "${value}" (auto, blob, direct or ledger)`);
+  }
   return value;
 }
 
@@ -122,17 +144,33 @@ async function main(argv: string[]) {
     }
     case 'quote': {
       const replicas = Number(option(args, '--replicas') ?? '1');
+      const mode = uploadMode(option(args, '--mode') ?? process.env.SOLADB_MODE ?? 'auto');
+      const epochs = option(args, '--epochs');
       const file = need(args[0], '<file>');
-      const q = await client.quoteFile(fs.statSync(file).size, replicas);
-      console.log(`${path.basename(file)} with ${replicas} replica(s): ${q.chunks} chunk(s), ${q.segments} segment transaction(s)`);
-      console.log(`  upload fee    ${sol(q.uploadFee)}  (protocol + replicators)`);
-      console.log(`  rent deposit  ${sol(q.rentDeposit)}  (refundable)`);
-      console.log(`  network fees  ${sol(q.networkFee)}`);
-      console.log(`  total         ${sol(q.total)}`);
+      const q = await client.quoteFile(fs.statSync(file).size, replicas, mode, epochs ? { epochs: Number(epochs) } : {});
+      if (q.mode === 'blob') {
+        const days = Number(q.storageSeconds ?? 0n) / 86_400;
+        console.log(`${path.basename(file)}, blob: ${q.layout!.k}+${q.layout!.m} shards (any ${q.layout!.k} rebuild it), ${q.chunks} blob account(s), ${q.epochs} epoch(s) ≈ ${days.toFixed(1)} days`);
+        console.log(`  storage fee   ${sol(q.uploadFee)}  (prepaid, protocol + shard holders)`);
+        console.log(`  network fees  ${sol(q.networkFee)}`);
+        console.log(`  blob rent     ${sol(q.chunkRent)}  (back when the storage ends)`);
+      } else {
+        console.log(`${path.basename(file)} with ${replicas} replica(s), ${q.mode}: ${q.chunks} chunk(s), ${q.segments} segment transaction(s)`);
+        console.log(`  upload fee    ${sol(q.uploadFee)}  (protocol + replicators)`);
+        console.log(`  network fees  ${sol(q.networkFee)}`);
+        console.log(`  chunk rent    ${sol(q.chunkRent)}  (back by itself once replicated)`);
+      }
+      console.log(`  record rent   ${sol(q.recordRent)}  (back when the file is deleted)`);
+      console.log(`  real cost     ${sol(q.uploadFee + q.networkFee)}  (at most; compression lowers it)`);
       return;
     }
     case 'upload': {
       const replicas = Number(option(args, '--replicas') ?? '1');
+      const modeOption = option(args, '--mode');
+      const mode = modeOption ? uploadMode(modeOption) : undefined;
+      const compress = !flag(args, '--no-compress');
+      const epochs = option(args, '--epochs');
+      const redundancy = option(args, '--redundancy');
       const wait = flag(args, '--wait');
       const file = need(args[0], '<file>');
       const data = new Uint8Array(fs.readFileSync(file));
@@ -144,14 +182,26 @@ async function main(argv: string[]) {
         name: path.basename(file),
         mime: MIME[path.extname(file).toLowerCase()],
         replicas,
+        mode,
+        compress,
+        ...(epochs ? { epochs: Number(epochs) } : {}),
+        ...(redundancy ? { redundancy: Number(redundancy) } : {}),
         onProgress: (p) => {
           if (p.stage !== 'segments' || p.done === p.total || p.done % 25 === 0) console.log(`  [${p.done}/${p.total}] ${p.stage}`);
         },
       });
       console.log(`recordId      ${result.recordId}`);
-      console.log(`chunks        ${result.chunks.length}`);
+      console.log(`mode          ${result.mode}${result.nodes.length ? ` (${result.nodes.join(', ')})` : ''}`);
+      console.log(`stored        ${result.storedSize} of ${data.length} bytes${result.storedSize < data.length ? ' (gzip)' : ''}`);
+      if (result.layout) {
+        console.log(`erasure code  ${result.layout.k}+${result.layout.m} (any ${result.layout.k} shards rebuild it)`);
+        console.log(`blobs         ${result.blobs!.join(', ')}`);
+        console.log(`paid until    ${new Date(Number(result.expiresAt ?? 0n) * 1000).toISOString()}`);
+      } else {
+        console.log(`chunks        ${result.chunks.length}`);
+      }
       console.log(`fees paid     ${sol(result.feePaid)}`);
-      console.log(`rent deposit  ${sol(result.rentDeposit)} (refundable with "reclaim")`);
+      console.log(`rent deposit  ${sol(result.rentDeposit)} (chunk rent returns once replicated, record rent on delete)`);
       console.log(`segment txs   ${result.segmentTransactions}`);
       if (wait) {
         console.log('Waiting for replication…');
@@ -160,10 +210,42 @@ async function main(argv: string[]) {
       }
       return;
     }
+    case 'upload-many': {
+      const epochs = option(args, '--epochs');
+      const name = need(args[0], '<name>');
+      const paths = args.slice(1);
+      if (paths.length === 0) throw new Error('Missing <files…>. Run "soladb help".');
+      if (!(await client.isRegistered())) await client.register();
+      const files = paths.map((p) => ({ name: path.basename(p), mime: MIME[path.extname(p).toLowerCase()] ?? 'application/octet-stream', data: new Uint8Array(fs.readFileSync(p)) }));
+      const result = await client.uploadFiles(files, { name, ...(epochs ? { epochs: Number(epochs) } : {}) });
+      console.log(`recordId      ${result.recordId}`);
+      console.log(`files         ${result.entries.length} in one blob (${result.layout!.k}+${result.layout!.m})`);
+      console.log(`stored        ${result.storedSize} bytes${result.storedSize < result.size ? ' (gzip)' : ''}`);
+      console.log(`fees paid     ${sol(result.feePaid)}`);
+      return;
+    }
+    case 'bundle': {
+      const dir = option(args, '-d') ?? process.cwd();
+      const entries = await client.downloadBundle(need(args[0], '<recordId>'));
+      fs.mkdirSync(dir, { recursive: true });
+      for (const entry of entries) {
+        const safeName = path.basename(entry.name.replace(/\\/g, '/')).replace(/[\x00-\x1f]/g, '');
+        if (!safeName || safeName === '.' || safeName === '..') throw new Error(`Unsafe file name in the bundle: ${JSON.stringify(entry.name)}`);
+        fs.writeFileSync(path.join(dir, safeName), entry.data, { flag: 'wx' });
+      }
+      console.log(`Saved ${entries.length} files to ${dir} (sha256 verified)`);
+      return;
+    }
+    case 'extend': {
+      const signatures = await client.extendFile(need(args[0], '<recordId>'), Number(need(args[1], '<epochs>')));
+      console.log(`Extended (${signatures.join(', ')})`);
+      return;
+    }
     case 'download': {
       const out = option(args, '-o');
+      const entry = option(args, '--entry');
       const recordId = need(args[0], '<recordId>');
-      const file = await client.downloadFile(recordId);
+      const file = await client.downloadFile(recordId, entry ? { entry } : {});
       // The manifest name is chosen by whoever shared the file: never let it pick the path
       const safeName = path.basename(file.name.replace(/\\/g, '/')).replace(/[\x00-\x1f]/g, '');
       if (!out && (!safeName || safeName === '.' || safeName === '..')) {
@@ -186,7 +268,15 @@ async function main(argv: string[]) {
       return;
     }
     case 'status': {
-      const { manifest, chunks, cool } = await client.fileStatus(need(args[0], '<recordId>'));
+      const { manifest, chunks, cool, blobs } = await client.fileStatus(need(args[0], '<recordId>'));
+      if (blobs) {
+        console.log(`${manifest.name} — ${manifest.size} bytes, ${blobs.length} blob(s), ${cool ? 'Cool' : 'Hot'}`);
+        for (const b of blobs) {
+          const until = b.expiresAt ? new Date(Number(b.expiresAt) * 1000).toISOString() : 'closed';
+          console.log(`  ${b.address}  ${b.state}  ${b.held}/${b.totalShards} shards (any ${b.dataShards} rebuild it), paid until ${until}`);
+        }
+        return;
+      }
       console.log(`${manifest.name} — ${manifest.size} bytes, ${chunks.length} chunk(s), ${cool ? 'Cool' : 'Hot'}`);
       for (const c of chunks) {
         console.log(`  ${c.address}  ${c.state}  ${c.confirmedReplicas}/${c.requiredReplicas} replicas`);

@@ -2,7 +2,8 @@
  * Why a chunk could not be replicated:
  *   invalid    — the ledger bytes do not hash to the chunk's content hash
  *                (buggy or malicious uploader); permanent, retried rarely
- *   incomplete — a segment is missing from the RPC's history
+ *   incomplete — a segment is missing from the RPC's history, or no peer
+ *                serves a direct chunk yet (its uploader may still be pushing it)
  *   error      — anything else (RPC, storage, transaction)
  */
 export type FailureKind = 'invalid' | 'incomplete' | 'error';
@@ -42,7 +43,7 @@ export interface BackoffSummary {
 export function classifyFailure(err: unknown): FailureKind {
   const message = err instanceof Error ? err.message : String(err);
   if (/does not match its content hash/i.test(message)) return 'invalid';
-  if (/Segment \d+ is missing|No segments found/i.test(message)) return 'incomplete';
+  if (/Segment \d+ is missing|No segments found|not available from any peer/i.test(message)) return 'incomplete';
   return 'error';
 }
 

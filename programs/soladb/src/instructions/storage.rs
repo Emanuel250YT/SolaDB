@@ -14,7 +14,8 @@ pub struct OpenChunkArgs {
     pub content_hash: [u8; 32],
     /// Chunk length in bytes
     pub size: u32,
-    /// Bytes per `write_segment` (the last one may be shorter)
+    /// Bytes per `write_segment` (the last one may be shorter); 0 = direct
+    /// chunk: the uploader sends the bytes straight to replicators
     pub segment_size: u16,
     pub replicas: u8,
     /// Key allowed to write the segments (the owner or a session key)
@@ -53,14 +54,22 @@ pub struct OpenChunk<'info> {
 }
 
 /// Reserve a chunk and pay for it.  The protocol share goes to the treasury
-/// and the replica rewards are escrowed in the chunk account itself.
+/// and the replica rewards are escrowed in the chunk account itself.  A
+/// direct chunk (`segment_size == 0`) is complete from the start: it waits
+/// for replicas right away.
 pub fn handle_open_chunk(ctx: Context<OpenChunk>, args: OpenChunkArgs) -> Result<()> {
+    let direct = args.segment_size == 0;
+    let max_size = if direct {
+        MAX_DIRECT_CHUNK_SIZE
+    } else {
+        MAX_CHUNK_SIZE
+    };
     require!(
-        args.size > 0 && args.size <= MAX_CHUNK_SIZE,
+        args.size > 0 && args.size <= max_size,
         SolaDbError::InvalidSize
     );
     require!(
-        (MIN_SEGMENT_SIZE..=MAX_SEGMENT_SIZE).contains(&args.segment_size),
+        direct || (MIN_SEGMENT_SIZE..=MAX_SEGMENT_SIZE).contains(&args.segment_size),
         SolaDbError::InvalidSegmentSize
     );
     let segments = segment_count(args.size, args.segment_size);
@@ -98,8 +107,12 @@ pub fn handle_open_chunk(ctx: Context<OpenChunk>, args: OpenChunkArgs) -> Result
     chunk.owner = owner.key();
     chunk.content_hash = args.content_hash;
     chunk.writer = args.writer;
-    chunk.state = ChunkState::Pending;
-    chunk.needs_replicas = false;
+    chunk.state = if direct {
+        ChunkState::Hot
+    } else {
+        ChunkState::Pending
+    };
+    chunk.needs_replicas = direct;
     chunk.reclaimed = false;
     chunk.bump = ctx.bumps.chunk;
     chunk.required_replicas = args.replicas;
@@ -110,7 +123,7 @@ pub fn handle_open_chunk(ctx: Context<OpenChunk>, args: OpenChunkArgs) -> Result
     chunk.size = args.size;
     chunk.reward_per_replica = reward_per_replica;
     chunk.opened_at = now;
-    chunk.completed_at = 0;
+    chunk.completed_at = if direct { now } else { 0 };
     chunk.reclaimable_at = now + window;
     chunk.segments = vec![0; (segments as usize).div_ceil(8)];
     chunk.replicators = Vec::with_capacity(args.replicas as usize);
@@ -125,10 +138,21 @@ pub fn handle_open_chunk(ctx: Context<OpenChunk>, args: OpenChunkArgs) -> Result
         protocol_fee,
         reward_per_replica,
     });
+    if direct {
+        emit!(ChunkCompleted {
+            chunk: chunk_key,
+            owner: chunk.owner,
+            size: args.size,
+        });
+    }
     Ok(())
 }
 
-fn pay<'info>(from: &AccountInfo<'info>, to: &AccountInfo<'info>, lamports: u64) -> Result<()> {
+pub(crate) fn pay<'info>(
+    from: &AccountInfo<'info>,
+    to: &AccountInfo<'info>,
+    lamports: u64,
+) -> Result<()> {
     transfer(
         CpiContext::new(
             System::id(),
@@ -210,10 +234,16 @@ pub struct ConfirmReplication<'info> {
 
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, Config>,
+
+    /// CHECK: the chunk owner; receives the chunk's rent when the last replica confirms
+    #[account(mut, dup, address = chunk.owner @ SolaDbError::InvalidChunkOwner)]
+    pub owner: UncheckedAccount<'info>,
 }
 
 /// A replicator stored the chunk (and checked its sha256): it is paid its
-/// reward from the chunk escrow right away.
+/// reward from the chunk escrow right away.  The last confirmation closes
+/// the chunk and refunds its rent to the owner, so deposits come back by
+/// themselves.
 pub fn handle_confirm_replication(ctx: Context<ConfirmReplication>) -> Result<()> {
     require!(
         ctx.accounts.replicator.active,
@@ -270,6 +300,17 @@ pub fn handle_confirm_replication(ctx: Context<ConfirmReplication>) -> Result<()
             confirmed_replicas: chunk.confirmed_replicas,
         });
     }
+
+    if chunk.confirmed_replicas == chunk.required_replicas {
+        let owner = chunk.owner;
+        ctx.accounts
+            .chunk
+            .close(ctx.accounts.owner.to_account_info())?;
+        emit!(ChunkClosed {
+            chunk: chunk_key,
+            owner,
+        });
+    }
     Ok(())
 }
 
@@ -322,14 +363,19 @@ pub struct CloseChunk<'info> {
 }
 
 /// Close the chunk account and refund its rent plus any unspent escrow.
-/// Allowed while the upload is still Pending (abort), once every replica is
-/// confirmed, or after the replication window.  The data stays on the
-/// replicators; readers verify it against the hash in their manifest.
+/// Allowed while the upload is still Pending (abort), for a direct chunk no
+/// replica confirmed within DIRECT_ABORT_DELAY (failed upload), once every
+/// replica is confirmed, or after the replication window.  The data stays on
+/// the replicators; readers verify it against the hash in their manifest.
 pub fn handle_close_chunk(ctx: Context<CloseChunk>) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
     let chunk = &ctx.accounts.chunk;
+    let direct_failed = chunk.is_direct()
+        && chunk.confirmed_replicas == 0
+        && now >= chunk.opened_at + DIRECT_ABORT_DELAY;
     require!(
         chunk.state == ChunkState::Pending
+            || direct_failed
             || chunk.confirmed_replicas == chunk.required_replicas
             || now >= chunk.reclaimable_at,
         SolaDbError::ChunkNotSettled

@@ -17,7 +17,7 @@ pub enum SolaDbError {
     // ── Storage ────────────────────────────────────────────
     #[msg("Treasury account does not match the configuration")]
     InvalidTreasury,
-    #[msg("Chunk size must be between 1 byte and 1 MiB")]
+    #[msg("Chunk size must be between 1 byte and 1 MiB (16 MiB for direct chunks)")]
     InvalidSize,
     #[msg("Segment size must be between 32 and 4000 bytes")]
     InvalidSegmentSize,
@@ -69,4 +69,48 @@ pub enum SolaDbError {
     RecordHasViewers,
     #[msg("Grant does not belong to this record")]
     GrantMismatch,
+
+    // ── Storage (appended to keep earlier codes stable) ────
+    #[msg("Account is not the chunk owner")]
+    InvalidChunkOwner,
+
+    // ── Blobs ──────────────────────────────────────────────
+    #[msg("Shards must be 1 ≤ k ≤ n ≤ 32 and the shard size a positive multiple of 1024 bytes")]
+    InvalidShardLayout,
+    #[msg("Epochs must be between 1 and 1200")]
+    InvalidEpochs,
+    #[msg("Shard index out of range")]
+    InvalidShardIndex,
+    #[msg("This shard slot already has a holder")]
+    SlotOccupied,
+    #[msg("This shard slot has no holder")]
+    SlotVacant,
+    #[msg("Signer is not the holder of this shard")]
+    NotHolder,
+    #[msg("This replicator already holds a shard of the blob")]
+    AlreadyHolder,
+    #[msg("The blob has expired")]
+    BlobExpired,
+    #[msg("The blob has not expired yet")]
+    BlobNotExpired,
+    #[msg("A challenge is already open on this shard")]
+    ChallengeOpen,
+    #[msg("This shard was challenged too recently")]
+    ChallengeCooldown,
+    #[msg("No open challenge on this shard")]
+    NoChallenge,
+    #[msg("The challenge slot has not been produced yet")]
+    ChallengeNotReady,
+    #[msg("The challenge deadline has passed")]
+    ChallengeExpired,
+    #[msg("The challenge deadline has not passed yet")]
+    ChallengeStillOpen,
+    #[msg("The challenge slot is no longer in SlotHashes")]
+    SlotHashUnavailable,
+    #[msg("Storage proof does not match the blob root")]
+    InvalidProof,
+    #[msg("A storage proof answers with one 1024-byte segment")]
+    InvalidSegment,
+    #[msg("The blob still has holders or is inside its abort delay")]
+    BlobNotClosable,
 }

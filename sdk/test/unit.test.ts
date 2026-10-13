@@ -27,6 +27,13 @@ import {
   extractErrorCode,
   SOLADB_ERRORS,
   createSolaDBRpc,
+  ChunkAccount,
+  challengeSlotHash,
+  DIRECT_ABORT_DELAY,
+  gunzip,
+  isClosable,
+  isDirect,
+  maybeCompress,
 } from '../src';
 import idl from '../src/idl/soladb.json';
 
@@ -101,9 +108,15 @@ test('Chunk accounts decode with the documented offsets', async () => {
 });
 
 test('fee split matches the program', () => {
-  const config = { baseFeePerReplica: 20_000n, pricePerByte: 2n, protocolFeeBps: 1_000 };
+  // 2 lamports per byte, expressed per MiB
+  const config = { baseFeePerReplica: 20_000n, pricePerMib: 2_097_152n, protocolFeeBps: 1_000 };
   const fee = quoteChunk(config, 1_000, 3);
   assert.equal(fee, 66_000n);
+  // pro rata per MiB, rounded up to the lamport (mirrors Config::quote)
+  const cheap = { baseFeePerReplica: 7_000n, pricePerMib: 20_000n };
+  assert.equal(quoteChunk(cheap, 1, 1), 7_001n);
+  assert.equal(quoteChunk(cheap, 1_048_576, 2), 54_000n);
+  assert.equal(quoteChunk(cheap, 524_288, 1), 17_000n);
   assert.deepEqual(splitFee(config, fee, 3), { protocolFee: 6_600n, rewardPerReplica: 19_800n });
   // rounding dust goes to the protocol
   assert.deepEqual(splitFee(config, 100_001n, 3), { protocolFee: 10_001n, rewardPerReplica: 30_000n });
@@ -123,6 +136,8 @@ test('manifest binary encoding round-trips (inline and index)', () => {
     chunks: [1, 2, 3, 4, 5].map((s) => bytes(32, s)),
   };
   assert.deepEqual(decodeManifest(encodeManifest(base)), base);
+  const flagged: FileManifest = { ...base, direct: true, compression: 'gzip' };
+  assert.deepEqual(decodeManifest(encodeManifest(flagged)), flagged);
   const indexed = { ...base, chunkCount: 40, chunks: [], index: bytes(32, 7) };
   const decoded = decodeManifest(encodeManifest(indexed));
   assert.equal(decoded.chunkCount, 40);
@@ -212,4 +227,46 @@ test('the RPC client backs off and retries rate-limited requests', async () => {
   } finally {
     server.close();
   }
+});
+
+test('gzip is only kept when it saves at least 10 %', async () => {
+  const text = new TextEncoder().encode('fecha,monto,concepto\n'.repeat(5_000));
+  const packed = await maybeCompress(text);
+  assert.ok(packed && packed.length < text.length / 10);
+  assert.deepEqual(await gunzip(packed), text);
+  const noise = crypto.getRandomValues(new Uint8Array(4_096));
+  assert.equal(await maybeCompress(noise), null, 'incompressible data is sent as it is');
+  assert.equal(await maybeCompress(new Uint8Array(100)), null, 'tiny files are not worth it');
+});
+
+test('a challenge is answered with the first produced slot at or after it', () => {
+  // SlotHashes: u64 count, then (u64 slot, hash) newest first; slot 102 was skipped
+  const entries: [bigint, number][] = [[105n, 5], [103n, 3], [101n, 1], [100n, 0]];
+  const data = new Uint8Array(8 + entries.length * 40);
+  const view = new DataView(data.buffer);
+  view.setBigUint64(0, BigInt(entries.length), true);
+  entries.forEach(([slot, fill], i) => {
+    view.setBigUint64(8 + i * 40, slot, true);
+    data.fill(fill, 16 + i * 40, 48 + i * 40);
+  });
+  assert.equal(challengeSlotHash(data, 101n)![0], 1);
+  assert.equal(challengeSlotHash(data, 102n)![0], 3, 'skipped slot → the next produced one');
+  assert.equal(challengeSlotHash(data, 105n)![0], 5);
+  assert.equal(challengeSlotHash(data, 106n), null, 'nothing produced yet');
+});
+
+test('direct chunks: closable after the abort delay without confirmations', () => {
+  const base = {
+    state: 'Hot',
+    segmentSize: 0,
+    confirmedReplicas: 0,
+    requiredReplicas: 2,
+    openedAt: 1_000n,
+    reclaimableAt: 1_000n + 604_800n,
+  } as unknown as ChunkAccount;
+  assert.equal(isDirect(base), true);
+  assert.equal(isClosable(base, 1_000n + DIRECT_ABORT_DELAY - 1n), false);
+  assert.equal(isClosable(base, 1_000n + DIRECT_ABORT_DELAY), true);
+  assert.equal(isClosable({ ...base, confirmedReplicas: 1 }, 1_000n + DIRECT_ABORT_DELAY), false);
+  assert.equal(isClosable({ ...base, segmentSize: 3_864 }, 1_000n + DIRECT_ABORT_DELAY), false);
 });

@@ -1,6 +1,7 @@
 export * from './accounts';
 export * from './client';
 export * from './codec';
+export * from './compression';
 export * from './crypto';
 export * from './deployments';
 export * from './ledger';
@@ -8,3 +9,7 @@ export * from './manifest';
 export * from './program';
 export * from './rpc';
 export * from './transactions';
+export * from './merkle';
+export * from './erasure';
+export * from './blob-layout';
+export * from './blob-manifest';

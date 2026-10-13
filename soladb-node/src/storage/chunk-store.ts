@@ -1,7 +1,7 @@
 /**
  * Raw chunk bytes, keyed by chunk account address (base58).  Implemented by
- * RocksDBService (production) and FsChunkStore (development, no native
- * module).
+ * RocksDBService (production), S3ChunkStore (any S3-compatible object store)
+ * and FsChunkStore (development, no native module).
  */
 export interface ChunkStore {
   putChunk(chunkId: string, data: Buffer): Promise<void>;

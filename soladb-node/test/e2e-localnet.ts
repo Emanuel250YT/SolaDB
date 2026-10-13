@@ -6,10 +6,15 @@
  *   npx tsx soladb-node/test/e2e-localnet.ts          # from the repo root
  *
  * It registers a fresh replicator, starts the built node (dist/main.js) with
- * the fs + file stores, uploads a ~300 KB file with 1 replica, waits for the
- * node to confirm every chunk (Cool, rewards paid), downloads the file through
- * the node only, checks the HTTP API, then restarts the node on the same data
- * directory and checks it still serves the chunks.
+ * the fs + file stores, uploads a ~300 KB file to the ledger with 1 replica,
+ * waits for the node to confirm every chunk (rewards paid, chunk accounts
+ * closed by the last confirmation), downloads the file through the node
+ * only, checks the HTTP API, then restarts the node on the same data
+ * directory and checks it still serves the chunks.  Then a direct upload
+ * (compressed, chunks pushed to the node over HTTP, nothing in the ledger):
+ * the node confirms every chunk in batched transactions, the chunk rent goes
+ * back to the uploader, and the file downloads through the node.  Last, the
+ * PUT /chunk/:id/data contract on chunks opened by hand.
  *
  * The node only replicates the test uploader's chunks (REPLICATE_OWNERS), so
  * it never interferes with other tests sharing the validator.
@@ -19,7 +24,7 @@
  *      E2E_KEEP_DATA=1 to keep the temp directory.
  */
 import { ChildProcess, spawn } from 'node:child_process';
-import { createHash, generateKeyPairSync } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes, randomInt } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -35,8 +40,10 @@ import {
   soladbInstructions,
   SolaDBClient,
   ChunkAccount,
+  ConfigAccount,
   fetchAccount,
   fetchAccounts,
+  MAX_DIRECT_CHUNK_SIZE,
   pdas,
   PROGRAM_ADDRESS,
   ReplicatorAccount,
@@ -50,17 +57,21 @@ const ADMIN = process.env.SOLADB_TEST_ADMIN ?? path.join(ROOT, '.localnet', 'adm
 const PORT = Number(process.env.E2E_NODE_PORT ?? 3100);
 const NODE_URL = `http://127.0.0.1:${PORT}`;
 const FILE_SIZE = 300_000;
+// Direct upload: ~890 KB of CSV, ~325 KB gzipped, in 128 KiB chunks (3 pushes)
+const CSV_ROWS = 25_000;
+const DIRECT_CHUNK_SIZE = 128 * 1024;
 // Node read commitment: "confirmed" keeps the run short; "finalized" is the production default
 const COMMITMENT = process.env.E2E_COMMITMENT ?? 'confirmed';
 const SOL = 1_000_000_000n;
 const SIGNATURE_FEE = 5_000n;
+/** Anchor's AccountNotInitialized: the chunk account was closed */
+const ACCOUNT_NOT_INITIALIZED = 3012;
 
 const rpc = createSolanaRpc(RPC);
 const sender = new TransactionSender(rpc);
 const ix = soladbInstructions();
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const sha256 = (data: Uint8Array) => createHash('sha256').update(data).digest('hex');
-const hex = (data: Uint8Array) => Buffer.from(data).toString('hex');
 
 // ── Reporting ────────────────────────────────────────────────────────────────
 
@@ -87,6 +98,17 @@ function newKeypairBytes(): Uint8Array {
   return Uint8Array.from([...seed, ...pub]);
 }
 
+/** Expense-sheet CSV with random amounts: compresses ~2.7×, not more */
+function csvFile(rows: number): Uint8Array {
+  const concepts = ['hosting', 'cafe', 'libros', 'taxi', 'luz', 'agua', 'renta', 'sueldo'];
+  const lines = ['fecha,monto,concepto,cuenta'];
+  for (let i = 0; i < rows; i++) {
+    const date = `2026-${String(1 + (i % 12)).padStart(2, '0')}-${String(1 + randomInt(28)).padStart(2, '0')}`;
+    lines.push(`${date},${(randomInt(10_000_000) / 100).toFixed(2)},${concepts[randomInt(8)]},${randomInt(1e9)}`);
+  }
+  return new TextEncoder().encode(lines.join('\n') + '\n');
+}
+
 async function balance(address: Address): Promise<bigint> {
   return (await rpc.getBalance(address, { commitment: 'confirmed' }).send()).value;
 }
@@ -111,6 +133,15 @@ async function getJson(url: string, init?: RequestInit): Promise<{ status: numbe
     // not JSON
   }
   return { status: response.status, body };
+}
+
+/** PUT /chunk/:id/data, as the SDK pushes a direct chunk */
+function putChunk(chunk: string, data: Uint8Array): Promise<{ status: number; body: any }> {
+  return getJson(`${NODE_URL}/chunk/${chunk}/data`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/octet-stream' },
+    body: data as BodyInit,
+  });
 }
 
 /** Start dist/main.js; its log lines are echoed with a [node] prefix */
@@ -170,6 +201,21 @@ async function waitForStatus(predicate: (status: any) => boolean, timeoutMs: num
   return last;
 }
 
+/** The node's metadata for each chunk (GET /chunk/:id/meta) */
+async function nodeMetas(chunks: Address[]): Promise<any[]> {
+  return Promise.all(chunks.map(async (c) => (await getJson(`${NODE_URL}/chunk/${c}/meta`)).body));
+}
+
+/** Balance once it stops moving (confirmations still settling into "confirmed") */
+async function settledBalance(address: Address, expected: bigint, from: bigint): Promise<bigint> {
+  let value = await balance(address);
+  for (let i = 0; i < 10 && value - from !== expected; i++) {
+    await sleep(500);
+    value = await balance(address);
+  }
+  return value;
+}
+
 // ── Test ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -196,10 +242,15 @@ async function main(): Promise<void> {
           await ix.initialize(admin, {
             treasury: admin.address,
             baseFeePerReplica: 20_000n,
-            pricePerByte: 2n,
+            pricePerMib: 2_097_152n,
             protocolFeeBps: 1_000,
             replicationThresholdPct: 60,
             replicationWindow: 3_600n,
+            epochSeconds: 60n,
+            pricePerMibEpoch: 1_000n,
+            challengeWindowSlots: 150n,
+            challengeCooldown: 0n,
+            challengerBountyBps: 1_000,
           }),
         ],
       });
@@ -216,10 +267,17 @@ async function main(): Promise<void> {
     });
     log(`replicator ${nodeSigner.address} registered with endpoint ${NODE_URL}`);
 
-    // 3. Uploader with a published encryption key
+    // 3. Uploader with a published encryption key; ledger uploads of uncompressed bytes first
     const uploader: KeyPairSigner = await createKeyPairSignerFromBytes(newKeypairBytes());
     await airdrop(uploader.address, 10n * SOL);
-    const client = new SolaDBClient({ rpc: RPC, signer: uploader, ledgerFallback: false, nodeUrls: [NODE_URL] });
+    const client = new SolaDBClient({
+      rpc: RPC,
+      signer: uploader,
+      mode: 'ledger',
+      compress: false,
+      ledgerFallback: false,
+      nodeUrls: [NODE_URL],
+    });
     await client.register();
     log(`uploader ${uploader.address} registered`);
 
@@ -254,28 +312,27 @@ async function main(): Promise<void> {
     log(`uploaded ${FILE_SIZE} bytes: record ${upload.recordId}, ${upload.chunks.length} chunks, ` +
       `${upload.segmentTransactions} segment txs, fee ${upload.feePaid} lamports`);
 
-    // 6. The node rebuilds + confirms every chunk
+    // 6. The node rebuilds + confirms every chunk; with 1 replica its confirmation closes the chunk account
     const coolStart = Date.now();
     await client.waitUntilCool(upload.chunks, { timeoutMs: 120_000, pollMs: 1_000 });
-    check('every chunk turns Cool through the node', true, `${((Date.now() - coolStart) / 1000).toFixed(1)}s after upload`);
-    // The chain can show Cool before the node's own sender saw its confirmation
-    await waitForStatus((s) => s.scan.totals.confirmed >= upload.chunks.length, 30_000);
+    check('every chunk is replicated through the node', true, `${((Date.now() - coolStart) / 1000).toFixed(1)}s after upload`);
+    // The chain can show the chunk closed before the node's own sender saw its confirmation
+    const status1a = await waitForStatus((s) => s.scan.totals.confirmed >= upload.chunks.length, 30_000);
 
     const accounts = await fetchAccounts<ChunkAccount>(rpc, upload.chunks, 'Chunk', 'confirmed');
-    const byNode = accounts.every((a) => a && a.data.replicators.length === 1 && a.data.replicators[0] === nodeSigner.address);
-    check('chunks list the node as their replicator', byNode,
-      accounts.map((a) => `${a?.data.state} ${a?.data.confirmedReplicas}/${a?.data.requiredReplicas}`).join(', '));
+    const metas = await nodeMetas(upload.chunks);
+    const byNode = accounts.every((a) => a === null) && metas.every((m) => m.source === 'local' && m.state === 'Closed' &&
+      m.confirmedReplicas === 1 && m.replicators.length === 1 && m.replicators[0] === nodeSigner.address);
+    check('the confirmation closes every chunk account; the node records itself as the replicator', byNode,
+      metas.map((m, i) => `${accounts[i] ? 'open' : 'closed'} ${m.state} ${m.confirmedReplicas}/${m.requiredReplicas}`).join(', '));
 
-    const rewards = accounts.reduce((sum, a) => sum + (a?.data.rewardPerReplica ?? 0n), 0n);
-    const expected = rewards - BigInt(upload.chunks.length) * SIGNATURE_FEE;
-    // Confirmations of the last chunk may still be settling into "confirmed" balances
-    let balanceAfter = await balance(nodeSigner.address);
-    for (let i = 0; i < 10 && balanceAfter - balanceBefore < expected; i++) {
-      await sleep(500);
-      balanceAfter = await balance(nodeSigner.address);
-    }
+    const rewards = metas.reduce((sum, m) => sum + BigInt(m.rewardPerReplica ?? 0), 0n);
+    const confirmTxs = BigInt(status1a.scan.totals.transactions);
+    const expected = rewards - confirmTxs * SIGNATURE_FEE;
+    const balanceAfter = await settledBalance(nodeSigner.address, expected, balanceBefore);
     check('node balance grew by the rewards minus tx fees', balanceAfter - balanceBefore === expected,
-      `+${balanceAfter - balanceBefore} lamports (rewards ${rewards} - ${upload.chunks.length} × ${SIGNATURE_FEE} fee)`);
+      `+${balanceAfter - balanceBefore} lamports (rewards ${rewards} - ${confirmTxs} confirm tx × ${SIGNATURE_FEE} fee, ` +
+      `${upload.chunks.length} chunks)`);
 
     const replicatorAccount = await fetchAccount<ReplicatorAccount>(rpc, await pdas.replicator(nodeSigner.address), 'Replicator', 'confirmed');
     check('Replicator account counts the confirmations',
@@ -289,25 +346,25 @@ async function main(): Promise<void> {
 
     // 8. HTTP API
     let rawOk = true;
-    for (const account of accounts) {
-      const response = await fetch(`${NODE_URL}/chunk/${account!.address}/data`);
+    for (const meta of metas) {
+      const response = await fetch(`${NODE_URL}/chunk/${meta.chunkId}/data`);
       const bytes = new Uint8Array(await response.arrayBuffer());
       rawOk &&= response.status === 200 &&
         response.headers.get('content-type') === 'application/octet-stream' &&
-        response.headers.get('x-chunk-id') === account!.address &&
-        sha256(bytes) === hex(account!.data.contentHash);
+        response.headers.get('x-chunk-id') === meta.chunkId &&
+        sha256(bytes) === meta.contentHash;
     }
     check('GET /chunk/:id/data serves sha256-valid bytes with headers', rawOk);
 
-    const meta = await getJson(`${NODE_URL}/chunk/${upload.chunks[0]}/meta`);
-    check('GET /chunk/:id/meta returns local metadata', meta.status === 200 && meta.body.source === 'local' &&
-      meta.body.state === 'Cool' && meta.body.confirmedReplicas === 1 && typeof meta.body.confirmSignature === 'string',
-      `state=${meta.body.state} confirmed=${meta.body.confirmedReplicas} slot=${meta.body.slot} sig=${String(meta.body.confirmSignature).slice(0, 12)}…`);
+    const meta = metas[0];
+    check('GET /chunk/:id/meta returns local metadata', meta.source === 'local' &&
+      meta.state === 'Closed' && meta.confirmedReplicas === 1 && typeof meta.confirmSignature === 'string',
+      `state=${meta.state} confirmed=${meta.confirmedReplicas} slot=${meta.slot} sig=${String(meta.confirmSignature).slice(0, 12)}…`);
 
     const query = await getJson(`${NODE_URL}/query`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ filter: { owner: uploader.address, state: 'Cool' }, orderBy: 'size', order: 'desc' }),
+      body: JSON.stringify({ filter: { owner: uploader.address, state: 'Closed' }, orderBy: 'size', order: 'desc' }),
     });
     check('POST /query filters by owner + state', query.status === 200 && query.body.count === upload.chunks.length &&
       query.body.data[0].size >= query.body.data[query.body.count - 1].size, `count=${query.body.count}`);
@@ -323,21 +380,24 @@ async function main(): Promise<void> {
       badQuery.status === 400 && badId.status === 400 && unknown.status === 404,
       `query=${badQuery.status} id=${badId.status} unknown=${unknown.status}`);
 
-    // 9. A second confirmation is rejected by the program (what the node treats as "nothing to do")
+    // 9. Another confirmation is rejected by the program: the account is gone
+    //    (what the node treats as "nothing to do")
     try {
-      await sender.send({ feePayer: nodeSigner, instructions: [await ix.confirmReplication(nodeSigner, upload.chunks[0])] });
-      check('second confirm_replication is rejected', false, 'it succeeded');
+      await sender.send({ feePayer: nodeSigner, instructions: [await ix.confirmReplication(nodeSigner, upload.chunks[0], uploader.address)] });
+      check('a confirmation after the last one is rejected', false, 'it succeeded');
     } catch (err) {
       const code = (err as { code?: number }).code;
-      check('second confirm_replication is rejected', code === SOLADB_ERRORS.FullyReplicated || code === SOLADB_ERRORS.AlreadyReplicated,
-        `code ${code} (${(err as { programError?: string }).programError})`);
+      check('a confirmation after the last one is rejected',
+        code === ACCOUNT_NOT_INITIALIZED || code === SOLADB_ERRORS.FullyReplicated || code === SOLADB_ERRORS.AlreadyReplicated,
+        `code ${code} (${(err as { programError?: string }).programError ?? 'AccountNotInitialized: chunk closed'})`);
     }
 
     const status1 = (await getJson(`${NODE_URL}/status`)).body;
     check('/status reports the scan stats', status1.scan.totals.confirmed >= upload.chunks.length &&
       status1.scan.totals.stored >= upload.chunks.length && status1.storage.chunks >= upload.chunks.length,
       `scans=${status1.scan.scans} stored=${status1.scan.totals.stored} confirmed=${status1.scan.totals.confirmed} ` +
-      `errors=${status1.scan.totals.errors} earned=${status1.lamportsEarned} balance=${status1.balanceLamports}`);
+      `txs=${status1.scan.totals.transactions} errors=${status1.scan.totals.errors} earned=${status1.lamportsEarned} ` +
+      `balance=${status1.balanceLamports}`);
 
     // 10. Restart on the same data directory: chunks still served, nothing re-downloaded
     await stopNode(node);
@@ -348,13 +408,122 @@ async function main(): Promise<void> {
     const again = await fetch(`${NODE_URL}/chunk/${upload.chunks[1]}/data`);
     const againBytes = new Uint8Array(await again.arrayBuffer());
     check('after a restart the node still serves its chunks', again.status === 200 &&
-      sha256(againBytes) === hex(accounts[1]!.data.contentHash) && status2.storage.chunks >= upload.chunks.length &&
+      sha256(againBytes) === metas[1].contentHash && status2.storage.chunks >= upload.chunks.length &&
       status2.scan.totals.stored === 0 && status2.scan.totals.confirmed === 0,
       `stored chunks=${status2.storage.chunks}, re-downloaded=${status2.scan.totals.stored}, re-confirmed=${status2.scan.totals.confirmed}`);
 
     const download2 = await new SolaDBClient({ rpc: RPC, signer: uploader, ledgerFallback: false, nodeUrls: [NODE_URL] })
       .downloadFile(upload.recordId);
     check('file downloads through the restarted node', Buffer.from(download2.data).equals(Buffer.from(file)));
+
+    // 11. Direct upload: compressed, chunks pushed to the node over HTTP, nothing in the ledger
+    const directClient = new SolaDBClient({
+      rpc: RPC,
+      signer: uploader,
+      mode: 'direct',
+      compress: true,
+      directChunkSize: DIRECT_CHUNK_SIZE,
+      ledgerFallback: false,
+      nodeUrls: [NODE_URL],
+    });
+    const csv = csvFile(CSV_ROWS);
+    const statusBefore = (await getJson(`${NODE_URL}/status`)).body;
+    const nodeBefore = await balance(nodeSigner.address);
+    const uploaderBefore = await balance(uploader.address);
+    const direct = await directClient.uploadFile(csv, { name: 'e2e-gastos.csv', mime: 'text/csv', replicas: 1 });
+    log(`direct upload: ${csv.length} bytes → ${direct.storedSize} gzipped, ${direct.chunks.length} chunks ` +
+      `pushed to ${direct.nodes.join(', ')}, ${direct.signatures.length} wallet tx, fee ${direct.feePaid} lamports`);
+    check('direct upload is compressed and pushed to the node, with no ledger writes',
+      direct.mode === 'direct' && direct.segmentTransactions === 0 && direct.storedSize < csv.length &&
+      direct.chunks.length > 1 && direct.nodes.length === 1 && direct.nodes[0] === NODE_URL,
+      `mode=${direct.mode} segments=${direct.segmentTransactions} chunks=${direct.chunks.length} nodes=${direct.nodes.join(',')}`);
+
+    const directStart = Date.now();
+    await directClient.waitUntilCool(direct.chunks, { timeoutMs: 60_000, pollMs: 1_000 });
+    const directAccounts = await fetchAccounts<ChunkAccount>(rpc, direct.chunks, 'Chunk', 'confirmed');
+    check('every direct chunk is confirmed and its account closed', directAccounts.every((a) => a === null),
+      `${((Date.now() - directStart) / 1000).toFixed(1)}s after the upload returned`);
+
+    // The uploader paid the upload fee, the record's rent and the network fee; the chunk rent came back
+    const record = await rpc.getAccountInfo(direct.recordId, { encoding: 'base64', commitment: 'confirmed' }).send();
+    const recordRent = await rpc.getMinimumBalanceForRentExemption(record.value!.space).send();
+    const networkFee = BigInt(direct.signatures.length) * SIGNATURE_FEE;
+    const uploaderSpent = uploaderBefore - (await balance(uploader.address));
+    check('chunk rent is refunded: uploader paid fee + record rent + network fee only',
+      uploaderSpent === direct.feePaid + recordRent + networkFee,
+      `spent ${uploaderSpent} = fee ${direct.feePaid} + record rent ${recordRent} + ${direct.signatures.length} × ${SIGNATURE_FEE}`);
+
+    const statusAfter = await waitForStatus(
+      (s) => s.scan.totals.confirmed >= statusBefore.scan.totals.confirmed + direct.chunks.length, 30_000);
+    const directTxs = statusAfter.scan.totals.transactions - statusBefore.scan.totals.transactions;
+    const directMetas = await nodeMetas(direct.chunks);
+    const directRewards = directMetas.reduce((sum, m) => sum + BigInt(m.rewardPerReplica ?? 0), 0n);
+    const directExpected = directRewards - BigInt(directTxs) * SIGNATURE_FEE;
+    const nodeEarned = (await settledBalance(nodeSigner.address, directExpected, nodeBefore)) - nodeBefore;
+    check('node stored the pushes and earned their rewards, one fee per confirmation transaction',
+      nodeEarned === directExpected && statusAfter.scan.pushes.accepted >= direct.chunks.length &&
+      directMetas.every((m) => m.source === 'local' && m.state === 'Closed' && m.slot === null),
+      `+${nodeEarned} lamports = rewards ${directRewards} - ${directTxs} tx(s) × ${SIGNATURE_FEE} for ` +
+      `${direct.chunks.length} chunks; pushes ${JSON.stringify(statusAfter.scan.pushes)}`);
+
+    const directDownload = await new SolaDBClient({ rpc: RPC, signer: uploader, ledgerFallback: false, nodeUrls: [NODE_URL] })
+      .downloadFile(direct.recordId);
+    check('direct file downloads through the node only', Buffer.from(directDownload.data).equals(Buffer.from(csv)),
+      `${directDownload.data.length} bytes, sha256 ${sha256(directDownload.data).slice(0, 16)}…`);
+
+    // 12. PUT /chunk/:id/data contract, on chunks opened by hand
+    const config = (await fetchAccount<ConfigAccount>(rpc, configAddress, 'Config', 'confirmed'))!.data;
+    const openChunk = async (data: Uint8Array, segmentSize: number): Promise<Address> => {
+      const contentHash = createHash('sha256').update(data).digest();
+      await sender.send({
+        feePayer: uploader,
+        instructions: [await ix.openChunk(uploader, config.treasury, {
+          contentHash,
+          size: data.length,
+          segmentSize,
+          replicas: 1,
+          writer: uploader.address,
+          maxFee: SOL,
+        })],
+      });
+      return pdas.chunk(uploader.address, contentHash);
+    };
+    const pushed = new Uint8Array(randomBytes(2_048));
+    const directChunk = await openChunk(pushed, 0);
+    const ledgerChunk = await openChunk(new Uint8Array(randomBytes(2_048)), 1_000);
+    const flipped = Uint8Array.from(pushed);
+    flipped[0] ^= 1;
+
+    const badHash = await putChunk(directChunk, flipped);
+    const badSize = await putChunk(directChunk, pushed.subarray(1));
+    const notDirect = await putChunk(ledgerChunk, pushed);
+    const notChunk = await putChunk(uploader.address, pushed);
+    const badPushId = await putChunk('not-an-address', pushed);
+    const tooLarge = await putChunk(directChunk, new Uint8Array(MAX_DIRECT_CHUNK_SIZE + 1));
+    check('push rejects: hash 400, size 400, ledger chunk 409, not a chunk 404, bad id 400, > 16 MiB 413',
+      badHash.status === 400 && badSize.status === 400 && notDirect.status === 409 && notChunk.status === 404 &&
+      badPushId.status === 400 && tooLarge.status === 413,
+      `hash=${badHash.status} size=${badSize.status} ledger=${notDirect.status} notChunk=${notChunk.status} ` +
+      `id=${badPushId.status} large=${tooLarge.status}`);
+
+    const accepted = await putChunk(directChunk, pushed);
+    const repeated = await putChunk(directChunk, pushed);
+    const closed = (await fetchAccount<ChunkAccount>(rpc, directChunk, 'Chunk', 'confirmed')) === null;
+    check('push accepted → 201 stored + confirmed (account closed), repeated → 200',
+      accepted.status === 201 && accepted.body.stored === true && accepted.body.confirmed === true &&
+      typeof accepted.body.signature === 'string' && closed &&
+      repeated.status === 200 && repeated.body.confirmed === true,
+      `201 ${JSON.stringify(accepted.body)}; then ${repeated.status} ${JSON.stringify(repeated.body)}; closed=${closed}`);
+
+    const preflight = await fetch(`${NODE_URL}/chunk/${directChunk}/data`, {
+      method: 'OPTIONS',
+      headers: { origin: 'https://app.example', 'access-control-request-method': 'PUT', 'access-control-request-headers': 'content-type' },
+    });
+    const allowed = preflight.headers.get('access-control-allow-methods') ?? '';
+    check('CORS preflight allows browser pushes (PUT)', preflight.status < 300 && /PUT/.test(allowed), `${preflight.status} ${allowed}`);
+
+    // the hand-opened ledger chunk was never written: close it (rent back)
+    await sender.send({ feePayer: uploader, instructions: [ix.closeChunk(uploader, ledgerChunk)] });
   } catch (err) {
     check('e2e run', false, (err as Error).stack ?? String(err));
   } finally {

@@ -4,8 +4,9 @@ import {
   type ChunkStatus,
   type ConfigAccount,
   type FileEntry,
-  type FileManifest,
+  type AnyManifest,
   type FileQuote,
+  type UploadMode,
 } from '@soladb/sdk';
 import { type Address, isAddress } from '@solana/kit';
 import { loadBurner, requestAirdrop } from './burner';
@@ -29,8 +30,9 @@ import { burnerSession, connectWallet, listWallets, safeIcon, watchWallets, type
 const NETWORK = resolveNetwork(import.meta.env as NetworkEnv);
 const rpc = createRpc(NETWORK);
 
-/** Max file size in the demo: about 17 segment transactions per 64 KiB chunk */
-const MAX_FILE_BYTES = 1024 * 1024;
+/** Max file size in the demo; ledger uploads stay small (about 17 segment transactions per 64 KiB chunk) */
+const MAX_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_LEDGER_BYTES = 1024 * 1024;
 const CHUNK_BYTES = 64 * 1024;
 const AIRDROP_SOL = NETWORK.cluster === 'localnet' ? 5n : 1n;
 const BURNER = 'burner';
@@ -39,7 +41,7 @@ const BURNER = 'burner';
 
 interface FileView {
   entry: FileEntry;
-  manifest?: FileManifest;
+  manifest?: AnyManifest;
   chunks?: ChunkStatus[];
   /** Wallets holding a grant (owner only, loaded when the share panel opens) */
   viewers?: Address[];
@@ -69,6 +71,10 @@ const state = {
   notice: undefined as Notice | undefined,
   file: undefined as File | undefined,
   replicas: 1,
+  /** auto = erasure-coded blob on the nodes when one answers, else the ledger */
+  mode: 'auto' as UploadMode,
+  /** Blob storage prepaid, in program epochs */
+  epochs: 12,
   quote: undefined as FileQuote | undefined,
   progress: [] as { stage: string; text: string }[],
   files: new Map<string, FileView>(),
@@ -404,7 +410,7 @@ async function updateQuote(): Promise<void> {
   const file = state.file;
   if (!client || !file) return;
   requireReady();
-  state.quote = await client.quoteFile(file.size, state.replicas);
+  state.quote = await client.quoteFile(file.size, state.replicas, state.mode, { epochs: state.epochs });
   render();
 }
 
@@ -421,14 +427,17 @@ async function upload(): Promise<void> {
   const file = state.file;
   if (!file) throw new Error('Choose a file first.');
   requireReady();
-  const quote = state.quote ?? (await client.quoteFile(file.size, state.replicas));
+  const quote = state.quote ?? (await client.quoteFile(file.size, state.replicas, state.mode, { epochs: state.epochs }));
+  if (quote.mode === 'ledger' && file.size > MAX_LEDGER_BYTES) {
+    throw new Error(`Ledger uploads are limited to ${bytes(MAX_LEDGER_BYTES)} in this demo. Choose "Direct to nodes" or a smaller file.`);
+  }
   await refreshBalance();
   if (state.balance !== undefined && state.balance < quote.total) {
     throw new Error(`This upload needs about ${sol(quote.total)} and the wallet holds ${sol(state.balance)}.${noSolHint()}`);
   }
 
   state.progress = [];
-  setProgress('encrypt', 'Encrypting in your browser…');
+  setProgress('encrypt', 'Compressing and encrypting in your browser…');
   const generation = state.generation;
   const data = new Uint8Array(await file.arrayBuffer());
   const burner = session.kind === 'burner';
@@ -436,6 +445,8 @@ async function upload(): Promise<void> {
     name: file.name,
     mime: file.type || 'application/octet-stream',
     replicas: state.replicas,
+    mode: quote.mode,
+    epochs: state.epochs,
     onProgress: (p) => {
       if (p.stage === 'sign') {
         setProgress(
@@ -449,7 +460,21 @@ async function upload(): Promise<void> {
       if (p.stage === 'segments') {
         setProgress('segments', `Wrote encrypted segments to the Solana ledger (${p.done}/${p.total})${burner ? '' : ', signed by a one-time session key'}`);
       }
-      if (p.stage === 'done') setProgress('done', 'Done. Replicators rebuild the chunks from the ledger next.');
+      if (p.stage === 'push') {
+        setProgress('push', quote.mode === 'blob'
+          ? `Sent erasure-coded shards to the nodes, one shard per node (${p.done}/${p.total})`
+          : `Sent encrypted chunks straight to replicator nodes (${p.done}/${p.total})`);
+      }
+      if (p.stage === 'done') {
+        setProgress(
+          'done',
+          quote.mode === 'blob'
+            ? `Done. Any ${quote.layout?.k} of the ${(quote.layout?.k ?? 0) + (quote.layout?.m ?? 0)} nodes can rebuild your file; they prove it periodically to get paid.`
+            : quote.mode === 'direct'
+              ? 'Done. The nodes confirm on-chain; the chunk deposit comes back to your wallet by itself.'
+              : 'Done. Replicators rebuild the chunks from the ledger next.',
+        );
+      }
     },
   });
 
@@ -746,9 +771,17 @@ function renderUpload(): void {
   }
   const disabled = state.busy ? 'disabled' : '';
   const file = state.file;
-  const chunks = file ? Math.max(1, Math.ceil(file.size / CHUNK_BYTES)) : 0;
-  const active = state.replicators.filter((r) => r.active).length;
   const quote = state.quote;
+  const chunks = file ? (quote?.chunks ?? Math.max(1, Math.ceil(file.size / CHUNK_BYTES))) : 0;
+  const active = state.replicators.filter((r) => r.active).length;
+  const modes: [UploadMode, string][] = [
+    ['auto', 'Automatic'],
+    ['blob', 'Nodes, erasure coded (cheapest)'],
+    ['ledger', 'Solana ledger'],
+  ];
+  const epochDays = state.config ? Number(state.config.epochSeconds) / 86_400 : 30;
+  const durations = [1, 3, 6, 12, 24].map((n) => [n, n * epochDays] as const);
+  const durationLabel = (days: number) => (days >= 365 ? `${+(days / 365).toFixed(1)} yr` : days >= 28 ? `${Math.round(days / 30)} mo` : `${+days.toFixed(2)} days`);
   const protocolPct = state.config ? state.config.protocolFeeBps / 100 : undefined;
   const burner = state.session?.kind === 'burner';
   setHtml(
@@ -759,7 +792,7 @@ function renderUpload(): void {
       <span>${
         file
           ? `<strong data-text="file-name"></strong><br />${esc(bytes(file.size))} in ${plural(chunks, 'encrypted chunk')}`
-          : `Drop a file here or choose one (up to ${esc(bytes(MAX_FILE_BYTES))})`
+          : `Drop a file here or choose one (up to ${esc(bytes(MAX_FILE_BYTES))}, ${esc(bytes(MAX_LEDGER_BYTES))} on the ledger)`
       }</span>
     </label>
     <div class="row">
@@ -769,14 +802,45 @@ function renderUpload(): void {
       </select>
       <span class="muted small">${plural(active, 'active replicator node')} on ${esc(NETWORK.name)}</span>
     </div>
+    <div class="row">
+      <label for="mode">Storage</label>
+      <select id="mode" ${disabled}>
+        ${modes.map(([value, label]) => `<option value="${value}" ${value === state.mode ? 'selected' : ''}>${label}</option>`).join('')}
+      </select>
+      ${
+        quote
+          ? `<span class="muted small">${
+              quote.mode === 'blob'
+                ? `Split into ${(quote.layout?.k ?? 0) + (quote.layout?.m ?? 0)} shards on different nodes; any ${quote.layout?.k} rebuild it. Solana keeps one root, the payment and who can read it.`
+                : quote.mode === 'direct'
+                  ? 'Chunks go straight to the nodes; Solana keeps the hash, the payment and who can read it.'
+                  : 'Chunks are written to the Solana ledger, readable before any node has copied them.'
+            }</span>`
+          : ''
+      }
+    </div>
+    ${
+      quote?.mode === 'blob'
+        ? `<div class="row">
+            <label for="epochs">Keep for</label>
+            <select id="epochs" ${disabled}>
+              ${durations.map(([n, days]) => `<option value="${n}" ${n === state.epochs ? 'selected' : ''}>${durationLabel(days)}</option>`).join('')}
+            </select>
+            <span class="muted small">Prepaid; extend it any time before it ends.</span>
+          </div>`
+        : ''
+    }
     ${
       quote
         ? `<dl class="quote">
-            <dt>Upload fee</dt><dd>${esc(sol(quote.uploadFee))}${protocolPct !== undefined ? ` <span class="muted">(${protocolPct}% protocol, the rest pays the replicas)</span>` : ''}</dd>
-            <dt>Rent deposit</dt><dd>${esc(sol(quote.rentDeposit))} <span class="muted">(refundable)</span></dd>
+            <dt>${quote.mode === 'blob' ? 'Storage fee' : 'Upload fee'}</dt><dd>${esc(sol(quote.uploadFee))}${protocolPct !== undefined ? ` <span class="muted">(${protocolPct}% protocol, the rest pays the ${quote.mode === 'blob' ? 'shard holders' : 'replicas'})</span>` : ''}</dd>
             <dt>Network fees</dt><dd>about ${esc(sol(quote.networkFee))}</dd>
-            <dt>Total</dt><dd>${esc(sol(quote.total))}</dd>
-            <dt>Transactions</dt><dd>${burner ? 'no prompts' : 'one wallet prompt'}, then ${plural(quote.segments, 'segment write')} to the ledger</dd>
+            <dt>Real cost</dt><dd>${esc(sol(quote.uploadFee + quote.networkFee))} <span class="muted">(at most: compressible files cost less)</span></dd>
+            <dt>Deposit</dt><dd>${esc(sol(quote.chunkRent))} <span class="muted">(${quote.mode === 'blob' ? 'comes back when the storage ends' : 'comes back by itself once replicated'})</span></dd>
+            <dt>Record deposit</dt><dd>${esc(sol(quote.recordRent))} <span class="muted">(back when you delete the file)</span></dd>
+            <dt>Transactions</dt><dd>${burner ? 'no prompts' : 'one wallet prompt'}${
+              quote.mode !== 'ledger' ? ', nothing written to the ledger' : `, then ${plural(quote.segments, 'segment write')} to the ledger`
+            }</dd>
           </dl>`
         : ''
     }
@@ -1029,6 +1093,14 @@ document.addEventListener('change', (event) => {
   if (target.id === 'file-input') void run(() => chooseFile((target as HTMLInputElement).files?.[0]));
   if (target.id === 'replicas') {
     state.replicas = Number((target as HTMLSelectElement).value) || 1;
+    void run(updateQuote);
+  }
+  if (target.id === 'mode') {
+    state.mode = (target as HTMLSelectElement).value as UploadMode;
+    void run(updateQuote);
+  }
+  if (target.id === 'epochs') {
+    state.epochs = Number((target as HTMLSelectElement).value) || 12;
     void run(updateQuote);
   }
 });

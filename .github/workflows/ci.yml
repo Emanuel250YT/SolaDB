@@ -80,9 +80,61 @@ jobs:
       - run: npm run build && npm test
         working-directory: soladb-node
 
+  # S3 / Postgres drivers against real MinIO and Postgres
+  # (soladb-node/test/storage-integration.spec.ts)
+  node-storage:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: soladb
+          POSTGRES_PASSWORD: soladb-ci
+          POSTGRES_DB: soladb
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U soladb -d soladb"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgres://soladb:soladb-ci@localhost:5432/soladb
+      S3_ENDPOINT: http://localhost:9000
+      S3_REGION: us-east-1
+      S3_FORCE_PATH_STYLE: "true"
+      S3_BUCKET: soladb-ci
+      S3_ACCESS_KEY_ID: soladb-ci
+      S3_SECRET_ACCESS_KEY: soladb-ci-secret
+    steps:
+      - uses: actions/checkout@v4
+      # An S3-compatible server (moto; MinIO no longer publishes its images)
+      - name: Start an S3 server
+        run: |
+          docker run -d --name s3 -p 9000:5000 motoserver/moto:5.2.3
+          for i in $(seq 1 60); do
+            curl -s -o /dev/null http://localhost:9000/ && exit 0
+            sleep 1
+          done
+          docker logs s3
+          exit 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            soladb-node/package-lock.json
+      - run: npm ci && npm run build:sdk
+      # On the runner (not node:22-bookworm, which has no Docker for the S3 server):
+      # --ignore-scripts skips rocksdb's native install, which these drivers
+      # never load (its prebuild crashes on this glibc, its sources need GCC < 13)
+      - run: npm ci --ignore-scripts
+        working-directory: soladb-node
+      # Creates the bucket, works under a random prefix / schema, cleans up
+      - run: npx jest --ci storage-integration
+        working-directory: soladb-node
+
   node-image:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: docker build -f soladb-node/Dockerfile -t soladb-node:ci .
-      - run: docker run --rm soladb-node:ci node -e "require('rocksdb'); require('oracledb'); require('@soladb/sdk')"
+      - run: docker run --rm soladb-node:ci node -e "require('rocksdb'); require('oracledb'); require('pg'); require('@aws-sdk/client-s3'); require('@soladb/sdk')"

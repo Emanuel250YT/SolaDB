@@ -74,10 +74,12 @@ fn emit_config(config: &Config) {
         admin: config.admin,
         treasury: config.treasury,
         base_fee_per_replica: config.base_fee_per_replica,
-        price_per_byte: config.price_per_byte,
+        price_per_mib: config.price_per_mib,
         protocol_fee_bps: config.protocol_fee_bps,
         replication_threshold_pct: config.replication_threshold_pct,
         replication_window: config.replication_window,
+        epoch_seconds: config.epoch_seconds,
+        price_per_mib_epoch: config.price_per_mib_epoch,
     });
 }
 
