@@ -33,7 +33,10 @@ services:
       - postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
 
-  # S3-compatible object store; one access key, written to an identities file at start
+  # S3-compatible object store; one access key, written to an identities file at start.
+  # Each bucket is a SeaweedFS collection with its own volumes: 1 GiB volumes and
+  # a volume count sized from the free disk (-volume.max=0) instead of the default
+  # 8 × 30 GiB, so buckets keep getting room as they grow
   s3:
     image: chrislusf/seaweedfs:4.48
     environment:
@@ -45,7 +48,8 @@ services:
       - >-
         printf '{"identities":[{"name":"soladb","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}'
         "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY" > /tmp/s3.json &&
-        exec weed server -dir=/data -s3 -s3.port=8333 -s3.config=/tmp/s3.json
+        exec weed server -dir=/data -volume.max=0 -master.volumeSizeLimitMB=1024
+        -s3 -s3.port=8333 -s3.config=/tmp/s3.json
     healthcheck:
       test: ["CMD-SHELL", "nc -z 127.0.0.1 8333"]
       interval: 5s
@@ -92,6 +96,9 @@ services:
       ORACLE_USER: soladb
       ORACLE_PASSWORD: ${ORACLE_PASSWORD:-soladb-dev-password}
       ORACLE_CONNECTION_STRING: oracle:1521/FREEPDB1
+      # The volume; wins over DATA_DIR=./data from a .env copied from .env.example
+      # (./data would be /app/node/data, not writable by the node user)
+      DATA_DIR: /app/data
       ROCKSDB_PATH: /app/data/rocksdb
       REPLICATOR_KEYPAIR: /run/keys/replicator.json
     depends_on:
